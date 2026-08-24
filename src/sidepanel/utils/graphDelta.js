@@ -1,4 +1,4 @@
-const NODE_TYPES = new Set(['analysis', 'comparison', 'judgment', 'question']);
+const NODE_TYPES = new Set(['analysis', 'comparison', 'synthesis', 'judgment', 'question']);
 const RELATIONS = new Set(['deepens', 'compares', 'supports', 'contradicts', 'informs']);
 
 function cleanText(value) {
@@ -37,6 +37,7 @@ function parseAssignments(text) {
 function normalizeNodeType(value) {
   const raw = cleanText(value).toLowerCase();
   if (raw === 'compare') return 'comparison';
+  if (raw === 'synth' || raw === 'synthesize' || raw === 'synthesise') return 'synthesis';
   if (raw === 'judge') return 'judgment';
   return NODE_TYPES.has(raw) ? raw : 'analysis';
 }
