@@ -16,7 +16,9 @@ const TYPE_META = {
 function ResearchNode({ data, selected }) {
   const meta = TYPE_META[data.type] || TYPE_META.analysis;
   const keywords = Array.isArray(data.keywords) ? data.keywords.slice(0, 3) : [];
-  const highlightCount = Array.isArray(data.highlights) ? data.highlights.length : 0;
+  const highlights = Array.isArray(data.highlights) ? data.highlights : [];
+  const highlightCount = highlights.length;
+  const visibleHighlights = selected ? highlights.slice(0, 3) : [];
 
   return (
     <div
@@ -102,6 +104,40 @@ function ResearchNode({ data, selected }) {
           }}
         >
           {data.checkpoint.length > 110 ? `${data.checkpoint.slice(0, 110)}…` : data.checkpoint}
+        </div>
+      ) : null}
+
+      {visibleHighlights.length ? (
+        <div style={{ marginTop: 8, paddingTop: 7, borderTop: '1px solid rgba(148, 163, 184, 0.28)' }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>
+            Highlights {highlightCount}
+          </div>
+          {visibleHighlights.map((highlight) => (
+            <div
+              key={highlight.id || highlight.quote}
+              title={highlight.quote || ''}
+              style={{
+                marginTop: 4,
+                padding: '5px 6px',
+                borderRadius: 6,
+                background: 'rgba(255,255,255,.72)',
+                fontSize: 9.5,
+                lineHeight: 1.35,
+                color: '#475569',
+                display: '-webkit-box',
+                WebkitBoxOrient: 'vertical',
+                WebkitLineClamp: 3,
+                overflow: 'hidden'
+              }}
+            >
+              ★ “{highlight.quote || ''}”
+            </div>
+          ))}
+          {highlightCount > visibleHighlights.length ? (
+            <div style={{ marginTop: 4, fontSize: 9, color: '#94a3b8' }}>
+              +{highlightCount - visibleHighlights.length} more
+            </div>
+          ) : null}
         </div>
       ) : null}
 
