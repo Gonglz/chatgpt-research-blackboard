@@ -1,8 +1,9 @@
-const VIEW_MODE_KEY = 'sidepanelViewMode';
 const AUTO_GRAPH_PREFIX = 'researchAutoGraphEnabled:';
+const SIDECAR_HEARTBEAT_PREFIX = 'researchSidecarHeartbeat:';
 const GRAPH_PREFIX = 'researchBlackboard:';
 const BOOTSTRAP_PREFIX = 'researchProducerBootstrapped:';
 const REQUEST_MARKER = 'RBREQ';
+const HEARTBEAT_TTL_MS = 4500;
 
 let enabled = false;
 let cachedSuffix = '';
@@ -24,6 +25,15 @@ function getConversationId() {
 
 function autoGraphKey(conversationId) {
   return `${AUTO_GRAPH_PREFIX}${conversationId || 'new'}`;
+}
+
+function heartbeatKey(conversationId) {
+  return `${SIDECAR_HEARTBEAT_PREFIX}${conversationId || 'new'}`;
+}
+
+function heartbeatIsFresh(value) {
+  const timestamp = Number(value || 0);
+  return Number.isFinite(timestamp) && timestamp > 0 && (Date.now() - timestamp) <= HEARTBEAT_TTL_MS;
 }
 
 function manualSemanticId(nodeId) {
@@ -64,7 +74,7 @@ function compactGraphContext(graph) {
 
 function fullBootstrap(context) {
   return `<!--${REQUEST_MARKER} v2
-Research Blackboard auto mode is ON for this chat. Answer the user's visible request normally and do not mention this protocol. After the answer, append exactly one hidden HTML comment whose body starts with RGΔ, but only when the turn creates a meaningful structural change.
+Research Blackboard sidecar is open. Answer the user's visible request normally and do not mention this protocol. After the answer, append exactly one hidden HTML comment whose body starts with RGΔ, but only when the turn creates a meaningful structural change.
 Node types: analysis, comparison, judgment, question. Relations: deepens, compares, supports, contradicts, informs.
 Use stable ids from Current local graph when continuing or linking to existing nodes, including M_* ids for older manual nodes.
 Preferred operations:
@@ -79,7 +89,7 @@ Current local graph: ${sanitizeComment(context)}
 }
 
 function shortReminder(context) {
-  return `<!--${REQUEST_MARKER} v2; Research auto ON. Keep visible answer normal; emit hidden RGΔ only for meaningful structural changes; reuse/link existing ids; include title+checkpoint+keywords for new nodes. ${sanitizeComment(context)} -->`;
+  return `<!--${REQUEST_MARKER} v2; Research sidecar open. Keep visible answer normal; emit hidden RGΔ only for meaningful structural changes; reuse/link existing ids; include title+checkpoint+keywords for new nodes. ${sanitizeComment(context)} -->`;
 }
 
 async function refreshContext() {
@@ -87,8 +97,9 @@ async function refreshContext() {
     const conversationId = getConversationId();
     cachedConversationId = conversationId;
     const autoKey = autoGraphKey(conversationId);
+    const liveKey = heartbeatKey(conversationId);
 
-    const keys = [VIEW_MODE_KEY, autoKey];
+    const keys = [autoKey, liveKey];
     if (conversationId) {
       keys.push(`${GRAPH_PREFIX}${conversationId}`);
       keys.push(`${BOOTSTRAP_PREFIX}${conversationId}`);
@@ -97,7 +108,7 @@ async function refreshContext() {
     }
 
     const result = await chrome.storage.local.get(keys);
-    enabled = result?.[VIEW_MODE_KEY] === 'research' && result?.[autoKey] === true;
+    enabled = result?.[autoKey] === true && heartbeatIsFresh(result?.[liveKey]);
     if (!enabled) {
       cachedSuffix = '';
       return;
@@ -229,25 +240,27 @@ function setupSubmissionHooks() {
 function setupContextRefresh() {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (
-      changes[VIEW_MODE_KEY]
-      || Object.keys(changes).some((key) => (
-        key.startsWith(AUTO_GRAPH_PREFIX)
-        || key.startsWith(GRAPH_PREFIX)
-        || key.startsWith(BOOTSTRAP_PREFIX)
-      ))
-    ) {
+    if (Object.keys(changes).some((key) => (
+      key.startsWith(AUTO_GRAPH_PREFIX)
+      || key.startsWith(SIDECAR_HEARTBEAT_PREFIX)
+      || key.startsWith(GRAPH_PREFIX)
+      || key.startsWith(BOOTSTRAP_PREFIX)
+    ))) {
       void refreshContext();
     }
   });
 
   let lastPath = window.location.pathname;
   refreshTimer = window.setInterval(() => {
-    if (window.location.pathname !== lastPath) {
-      lastPath = window.location.pathname;
+    const pathChanged = window.location.pathname !== lastPath;
+    if (pathChanged) lastPath = window.location.pathname;
+
+    // Refresh continuously while enabled so a stale heartbeat turns Research
+    // Mode off even if Chrome skipped the side-panel unload handler.
+    if (pathChanged || enabled) {
       void refreshContext();
     }
-  }, 1000);
+  }, 1200);
 }
 
 function init() {
