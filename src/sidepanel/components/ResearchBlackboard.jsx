@@ -1,12 +1,9 @@
 /**
  * Research Blackboard v0.1
  *
- * Manual semantic graph layered on top of the current ChatGPT conversation.
- * The core UX hypothesis is intentionally small:
- *   1) pin a ChatGPT message as a semantic research node,
- *   2) arrange/link nodes spatially,
- *   3) persist the structure locally,
- *   4) click a node to jump back to its source message.
+ * Semantic graph layered on top of the current ChatGPT conversation.
+ * The MVP keeps the user in normal chat while turning selected messages into
+ * compact research nodes with durable message anchors.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -25,6 +22,11 @@ import { clearResearchGraph, loadResearchGraph, saveResearchGraph } from '../uti
 const nodeTypes = { researchNode: ResearchNode };
 const RELATIONS = ['deepens', 'compares', 'supports', 'contradicts', 'informs'];
 const NODE_TYPES = ['analysis', 'comparison', 'judgment', 'question'];
+const GENERIC_KEYWORDS = new Set([
+  '问题', '分析', '比较', '对比', '判断', '结论', '情况', '内容', '这个', '那个',
+  '可以', '应该', '需要', '现在', '这里', '一个', '一种', '方面', '东西', 'ChatGPT',
+  'analysis', 'comparison', 'judgment', 'question'
+]);
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -43,15 +45,174 @@ function makeId(prefix) {
   }
 }
 
-function normalizeStoredNode(node) {
+function stripMarkdown(value) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*>\s?/gm, '')
+    .replace(/[\*_~]/g, ' ');
+}
+
+function compactTopic(value) {
+  return cleanText(value)
+    .replace(/^[：:，,。；;\-—–\s]+|[：:，,。；;\-—–\s]+$/g, '')
+    .replace(/^(关于|针对|如果把|如果|把|这个|那个|我们来|先看|再看|那么|所以|然后|这里)/, '')
+    .replace(/[（(][^）)]{0,28}[）)]/g, '')
+    .trim();
+}
+
+function inferNodeTitle(content, role = 'message', type = 'analysis') {
+  const raw = String(content || '');
+  const heading = raw
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\s{0,3}#{1,6}\s+(.{2,80})\s*$/)?.[1])
+    .find(Boolean);
+
+  if (heading) return truncate(compactTopic(heading), 34);
+
+  const text = cleanText(stripMarkdown(raw));
+  if (!text) return 'Research node';
+
+  if (type === 'comparison') {
+    const placed = text.match(/(?:如果)?把?(.{2,22}?)(?:[（(][^）)]{0,24}[）)])?(?:横向)?(?:放到|放进|放在)(.{2,22}?)(?:里|中|来看|去看|，|。)/);
+    if (placed) {
+      const left = compactTopic(placed[1]);
+      const right = compactTopic(placed[2]);
+      if (left && right) return truncate(`${left} × ${right}`, 34);
+    }
+
+    const versus = text.match(/(.{2,20}?)(?:和|与|vs\.?|VS)(.{2,20}?)(?:相比|比较|对比|横比)/i);
+    if (versus) {
+      const left = compactTopic(versus[1]);
+      const right = compactTopic(versus[2]);
+      if (left && right) return truncate(`${left} × ${right}`, 34);
+    }
+  }
+
+  if (type === 'judgment') {
+    const conclusion = text.match(/(?:结论|判断|因此|所以|这意味着|更可能是|核心是)[：:，,\s]*(.{4,42}?)(?:。|；|;|！|!|$)/);
+    if (conclusion?.[1]) return truncate(compactTopic(conclusion[1]), 34);
+  }
+
+  const clauses = text
+    .split(/[。！？?!；;\n]/)
+    .map(compactTopic)
+    .filter((part) => part.length >= 4);
+
+  if (type === 'question') {
+    const questionClause = clauses.find((part) => /(为什么|怎么|如何|是否|是不是|能不能|会不会|要不要|有没有|哪一个|哪个)/.test(part));
+    if (questionClause) return truncate(questionClause, 32);
+  }
+
+  let candidate = clauses[0] || text;
+  candidate = candidate
+    .replace(/^(可以|当然|对|是的|没错|简单说|直接说|先说|我觉得|我认为)[：:，,\s]*/, '')
+    .replace(/^(所以|那么|然后|那|这里|现在)[，,\s]*/, '');
+
+  if (role === 'user') {
+    candidate = candidate.replace(/^(帮我|你帮我|你觉得|我想问|我在想)[，,\s]*/, '');
+  }
+
+  return truncate(compactTopic(candidate) || text, 32);
+}
+
+function inferKeywords(content, title = '') {
+  const text = cleanText(stripMarkdown(content));
+  const keywords = [];
+  const seen = new Set();
+
+  const add = (value) => {
+    const keyword = compactTopic(value).replace(/^的|的$/g, '').trim();
+    if (!keyword || keyword.length < 2 || keyword.length > 14) return;
+    const lower = keyword.toLowerCase();
+    if (GENERIC_KEYWORDS.has(keyword) || GENERIC_KEYWORDS.has(lower) || seen.has(lower)) return;
+    seen.add(lower);
+    keywords.push(keyword);
+  };
+
+  String(title || '')
+    .split(/[×｜|/：:、，,]|\s+-\s+|\s+vs\.?\s+/i)
+    .forEach(add);
+
+  const domainMatches = text.match(/(?:[A-Za-z][A-Za-z0-9.+/#-]{2,}|[\u4e00-\u9fff]{2,10}(?:时期|时代|艺术史|毛利率|估值|定价权|产品结构|商业模式|行业|公司|模型|架构|系统|策略|风险|周期|现金流|增长|竞争力|供给|需求))/g) || [];
+  domainMatches.forEach(add);
+
+  if (keywords.length < 3) {
+    text
+      .split(/[\s，。！？；、：:（）()《》“”"'`~!@#$%^&*+=\[\]{}<>/\\|]+/)
+      .flatMap((part) => part.split(/(?:如果|但是|因为|所以|以及|还有|这个|那个|我们|你们|他们|可以|应该|需要|已经|就是|不是|是否|为什么|怎么|如何|一个|一种|对于|关于|通过|进行|比较|对比|分析|判断|结论|把|被|在|里|中|上|下|与|和|或|的|了|是|有|为|到|从)/))
+      .filter((part) => part.length >= 2 && part.length <= 10)
+      .slice(0, 20)
+      .forEach(add);
+  }
+
+  return keywords.slice(0, 3);
+}
+
+function buildSourceMessages(conversationData) {
+  const raw = (Array.isArray(conversationData?.nodes) ? conversationData.nodes : [])
+    .filter((node) => node?.id && cleanText(node?.content))
+    .slice()
+    .sort((a, b) => (a.createTime || 0) - (b.createTime || 0));
+
+  const roleCounts = new Map();
+  return raw.map((node, messageIndex) => {
+    const role = cleanText(node.role || 'message').toLowerCase() || 'message';
+    const roleIndex = roleCounts.get(role) || 0;
+    roleCounts.set(role, roleIndex + 1);
+    const rawContent = String(node.content || '');
+    const content = cleanText(rawContent);
+
+    return {
+      id: node.id,
+      role,
+      rawContent,
+      content,
+      createTime: node.createTime || 0,
+      messageIndex,
+      roleIndex,
+      textLength: content.length
+    };
+  });
+}
+
+function looksLikeLegacyRawTitle(title, source) {
+  if (!title || title === 'Untitled research node') return true;
+  if (!source?.content) return false;
+  const probe = cleanText(title).replace(/…$/, '');
+  return probe.length >= 10 && source.content.startsWith(probe);
+}
+
+function normalizeStoredNode(node, source) {
+  const existingData = node?.data || {};
+  const type = existingData.type || 'analysis';
+  const shouldRefreshTitle = !existingData.titleEdited && looksLikeLegacyRawTitle(existingData.title, source);
+  const title = shouldRefreshTitle && source
+    ? inferNodeTitle(source.rawContent, source.role, type)
+    : (existingData.title || 'Untitled research node');
+
   return {
     ...node,
     type: 'researchNode',
     data: {
-      type: 'analysis',
-      title: 'Untitled research node',
+      type,
+      title,
       checkpoint: '',
-      ...node.data
+      ...existingData,
+      title,
+      titleSource: shouldRefreshTitle ? 'auto' : (existingData.titleSource || 'manual'),
+      keywords: Array.isArray(existingData.keywords) && existingData.keywords.length
+        ? existingData.keywords
+        : inferKeywords(source?.rawContent || existingData.messagePreview || '', title),
+      messageRole: existingData.messageRole || source?.role || null,
+      messagePreview: existingData.messagePreview || (source ? truncate(source.content, 180) : ''),
+      messageTail: existingData.messageTail || (source ? source.content.slice(-180) : ''),
+      messageTextLength: existingData.messageTextLength || source?.textLength || 0,
+      messageIndex: Number.isInteger(existingData.messageIndex) ? existingData.messageIndex : (source?.messageIndex ?? -1),
+      messageRoleIndex: Number.isInteger(existingData.messageRoleIndex) ? existingData.messageRoleIndex : (source?.roleIndex ?? -1)
     }
   };
 }
@@ -69,20 +230,9 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
   const [status, setStatus] = useState('');
   const loadedConversationRef = useRef(null);
 
-  const sourceMessages = useMemo(() => {
-    const raw = Array.isArray(conversationData?.nodes) ? conversationData.nodes : [];
-    return raw
-      .filter((node) => node?.id && cleanText(node?.content))
-      .slice()
-      .sort((a, b) => (a.createTime || 0) - (b.createTime || 0))
-      .slice(-60)
-      .map((node) => ({
-        id: node.id,
-        role: node.role || 'message',
-        content: cleanText(node.content),
-        createTime: node.createTime || 0
-      }));
-  }, [conversationData]);
+  const allSourceMessages = useMemo(() => buildSourceMessages(conversationData), [conversationData]);
+  const sourceMessages = useMemo(() => allSourceMessages.slice(-80), [allSourceMessages]);
+  const sourceMap = useMemo(() => new Map(allSourceMessages.map((message) => [message.id, message])), [allSourceMessages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +245,9 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
     (async () => {
       const graph = await loadResearchGraph(conversationId);
       if (cancelled) return;
-      setNodes((graph.nodes || []).map(normalizeStoredNode));
+      const freshSources = buildSourceMessages(conversationData);
+      const freshSourceMap = new Map(freshSources.map((message) => [message.id, message]));
+      setNodes((graph.nodes || []).map((node) => normalizeStoredNode(node, freshSourceMap.get(node?.data?.messageId))));
       setEdges(graph.edges || []);
       loadedConversationRef.current = conversationId;
       setStatus(graph.nodes?.length ? 'Local graph loaded' : 'Start by pinning a message');
@@ -141,9 +293,36 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
     [sourceMessages, sourceMessageId]
   );
 
+  const suggestedTitle = useMemo(
+    () => selectedSource ? inferNodeTitle(selectedSource.rawContent, selectedSource.role, draftType) : '',
+    [selectedSource, draftType]
+  );
+
+  const suggestedKeywords = useMemo(
+    () => selectedSource ? inferKeywords(selectedSource.rawContent, suggestedTitle) : [],
+    [selectedSource, suggestedTitle]
+  );
+
+  const makeJumpAnchor = useCallback((node) => {
+    const messageId = node?.data?.messageId;
+    if (!messageId) return null;
+    const source = sourceMap.get(messageId);
+    return {
+      messageId,
+      role: source?.role || node.data.messageRole || null,
+      preview: source?.content.slice(0, 220) || node.data.messagePreview || '',
+      tail: source?.content.slice(-180) || node.data.messageTail || '',
+      textLength: source?.textLength || node.data.messageTextLength || 0,
+      messageIndex: source?.messageIndex ?? node.data.messageIndex ?? -1,
+      roleIndex: source?.roleIndex ?? node.data.messageRoleIndex ?? -1
+    };
+  }, [sourceMap]);
+
   const addResearchNode = useCallback(() => {
-    const source = sourceMessages.find((message) => message.id === sourceMessageId) || null;
-    const title = cleanText(draftTitle) || truncate(source?.content || 'Research node', 48);
+    const source = sourceMap.get(sourceMessageId) || null;
+    const autoTitle = source ? inferNodeTitle(source.rawContent, source.role, draftType) : 'Research node';
+    const title = cleanText(draftTitle) || autoTitle;
+    const keywords = source ? inferKeywords(source.rawContent, title) : [];
     const index = nodes.length;
     const id = makeId('research');
 
@@ -157,18 +336,25 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
       data: {
         type: draftType,
         title,
+        titleSource: cleanText(draftTitle) ? 'manual' : 'auto',
+        titleEdited: !!cleanText(draftTitle),
+        keywords,
         checkpoint: '',
         messageId: source?.id || null,
         messageRole: source?.role || null,
-        messagePreview: source ? truncate(source.content, 160) : ''
+        messagePreview: source ? truncate(source.content, 180) : '',
+        messageTail: source ? source.content.slice(-180) : '',
+        messageTextLength: source?.textLength || 0,
+        messageIndex: source?.messageIndex ?? -1,
+        messageRoleIndex: source?.roleIndex ?? -1
       }
     };
 
     setNodes((current) => current.concat(node));
     setSelectedNodeId(id);
     setDraftTitle('');
-    setStatus(source ? 'Pinned message as research node' : 'Created research node');
-  }, [draftTitle, draftType, nodes.length, setNodes, sourceMessageId, sourceMessages]);
+    setStatus(source ? 'Pinned message with auto summary' : 'Created research node');
+  }, [draftTitle, draftType, nodes.length, setNodes, sourceMessageId, sourceMap]);
 
   const onConnect = useCallback((connection) => {
     setEdges((current) => addEdge({
@@ -182,9 +368,9 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
 
   const handleNodeClick = useCallback((event, node) => {
     setSelectedNodeId(node.id);
-    const messageId = node?.data?.messageId;
-    if (messageId) onJumpToMessage?.(messageId);
-  }, [onJumpToMessage]);
+    const anchor = makeJumpAnchor(node);
+    if (anchor) onJumpToMessage?.(anchor);
+  }, [makeJumpAnchor, onJumpToMessage]);
 
   const patchSelectedNode = useCallback((patch) => {
     if (!selectedNodeId) return;
@@ -194,6 +380,19 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
         : node
     )));
   }, [selectedNodeId, setNodes]);
+
+  const autoSummarizeSelectedNode = useCallback(() => {
+    if (!selectedNode) return;
+    const source = sourceMap.get(selectedNode.data.messageId);
+    if (!source) return;
+    const title = inferNodeTitle(source.rawContent, source.role, selectedNode.data.type || 'analysis');
+    patchSelectedNode({
+      title,
+      titleSource: 'auto',
+      titleEdited: false,
+      keywords: inferKeywords(source.rawContent, title)
+    });
+  }, [selectedNode, sourceMap, patchSelectedNode]);
 
   const deleteSelectedNode = useCallback(() => {
     if (!selectedNodeId) return;
@@ -260,7 +459,7 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
           <input
             value={draftTitle}
             onChange={(event) => setDraftTitle(event.target.value)}
-            placeholder="Node title (optional)"
+            placeholder={suggestedTitle ? `Auto: ${suggestedTitle}` : 'Node title (optional)'}
             style={inputStyle}
           />
         </div>
@@ -281,7 +480,9 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
         <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
           <button type="button" onClick={addResearchNode} style={primaryButtonStyle}>+ Pin as node</button>
           <span style={{ fontSize: 10, color: '#64748b', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {selectedSource ? truncate(selectedSource.content, 64) : 'Manual node'}
+            {selectedSource
+              ? `${suggestedTitle}${suggestedKeywords.length ? ` · ${suggestedKeywords.join(' / ')}` : ''}`
+              : 'Manual node'}
           </span>
         </div>
       </div>
@@ -291,7 +492,7 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
           <div className="empty-state" style={{ position: 'absolute' }}>
             <div style={{ fontSize: 30, marginBottom: 8 }}>⌘</div>
             <h2 style={{ fontSize: 15 }}>Pin the first research node</h2>
-            <p style={{ maxWidth: 260 }}>Choose a message above, then arrange semantic nodes instead of raw message history.</p>
+            <p style={{ maxWidth: 260 }}>Choose a message above. The blackboard will generate a compact title and keywords instead of copying the raw message.</p>
           </div>
         ) : null}
         <ReactFlow
@@ -320,16 +521,46 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <strong style={{ fontSize: 12 }}>Node inspector</strong>
-              <button type="button" onClick={deleteSelectedNode} style={{ ...smallButtonStyle, color: '#b91c1c' }}>Delete node</button>
+              <div style={{ display: 'flex', gap: 5 }}>
+                <button type="button" onClick={autoSummarizeSelectedNode} style={smallButtonStyle}>Auto title</button>
+                <button type="button" onClick={deleteSelectedNode} style={{ ...smallButtonStyle, color: '#b91c1c' }}>Delete</button>
+              </div>
             </div>
 
             <label style={labelStyle}>Type</label>
-            <select value={selectedNode.data.type || 'analysis'} onChange={(event) => patchSelectedNode({ type: event.target.value })} style={{ ...inputStyle, width: '100%' }}>
+            <select
+              value={selectedNode.data.type || 'analysis'}
+              onChange={(event) => {
+                const nextType = event.target.value;
+                const source = sourceMap.get(selectedNode.data.messageId);
+                const nextTitle = !selectedNode.data.titleEdited && source
+                  ? inferNodeTitle(source.rawContent, source.role, nextType)
+                  : selectedNode.data.title;
+                patchSelectedNode({
+                  type: nextType,
+                  title: nextTitle,
+                  keywords: source ? inferKeywords(source.rawContent, nextTitle) : selectedNode.data.keywords
+                });
+              }}
+              style={{ ...inputStyle, width: '100%' }}
+            >
               {NODE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
             </select>
 
             <label style={labelStyle}>Title</label>
-            <input value={selectedNode.data.title || ''} onChange={(event) => patchSelectedNode({ title: event.target.value })} style={{ ...inputStyle, width: '100%' }} />
+            <input
+              value={selectedNode.data.title || ''}
+              onChange={(event) => patchSelectedNode({ title: event.target.value, titleEdited: true, titleSource: 'manual' })}
+              style={{ ...inputStyle, width: '100%' }}
+            />
+
+            {Array.isArray(selectedNode.data.keywords) && selectedNode.data.keywords.length ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
+                {selectedNode.data.keywords.map((keyword) => (
+                  <span key={keyword} style={keywordChipStyle}>{keyword}</span>
+                ))}
+              </div>
+            ) : null}
 
             <label style={labelStyle}>Checkpoint</label>
             <textarea
@@ -344,7 +575,16 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
               <div style={{ marginTop: 8, padding: 8, borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
                 <div style={{ fontSize: 10, color: '#64748b' }}>Chat anchor · {selectedNode.data.messageRole || 'message'}</div>
                 <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.35 }}>{selectedNode.data.messagePreview || selectedNode.data.messageId}</div>
-                <button type="button" onClick={() => onJumpToMessage?.(selectedNode.data.messageId)} style={{ ...smallButtonStyle, marginTop: 7 }}>Jump to source</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const anchor = makeJumpAnchor(selectedNode);
+                    if (anchor) onJumpToMessage?.(anchor);
+                  }}
+                  style={{ ...smallButtonStyle, marginTop: 7 }}
+                >
+                  Jump to source
+                </button>
               </div>
             ) : null}
 
@@ -434,6 +674,16 @@ const tinyButtonStyle = {
   height: 22,
   cursor: 'pointer',
   color: '#64748b'
+};
+
+const keywordChipStyle = {
+  border: '1px solid #dbeafe',
+  background: '#f8fafc',
+  color: '#475569',
+  borderRadius: 999,
+  padding: '2px 6px',
+  fontSize: 9,
+  lineHeight: 1.3
 };
 
 const labelStyle = {
