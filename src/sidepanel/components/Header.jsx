@@ -10,7 +10,26 @@
 import React, { useEffect, useState } from 'react';
 
 const iconUrl = (name) => chrome.runtime.getURL(`assets/${name}`);
-const AUTO_GRAPH_KEY = 'researchAutoGraphEnabled';
+const AUTO_GRAPH_PREFIX = 'researchAutoGraphEnabled:';
+
+function conversationKeyFromUrl(url) {
+  try {
+    const parsed = new URL(url || '');
+    const match = parsed.pathname.match(/\/c\/([a-zA-Z0-9-]+)/);
+    return `${AUTO_GRAPH_PREFIX}${match?.[1] || 'new'}`;
+  } catch {
+    return `${AUTO_GRAPH_PREFIX}new`;
+  }
+}
+
+async function getActiveConversationKey() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    return conversationKeyFromUrl(tab?.url || '');
+  } catch {
+    return `${AUTO_GRAPH_PREFIX}new`;
+  }
+}
 
 export default function Header({
   onRefresh,
@@ -21,28 +40,45 @@ export default function Header({
   onToggleMiniMap
 }) {
   const [autoGraphEnabled, setAutoGraphEnabled] = useState(false);
+  const [autoGraphKey, setAutoGraphKey] = useState(`${AUTO_GRAPH_PREFIX}new`);
 
   useEffect(() => {
     let cancelled = false;
-    chrome.storage.local.get([AUTO_GRAPH_KEY]).then((result) => {
-      if (!cancelled) setAutoGraphEnabled(result?.[AUTO_GRAPH_KEY] === true);
-    }).catch(() => {});
 
-    const listener = (changes, area) => {
-      if (area !== 'local' || !changes?.[AUTO_GRAPH_KEY]) return;
-      setAutoGraphEnabled(changes[AUTO_GRAPH_KEY].newValue === true);
+    const refresh = async () => {
+      const key = await getActiveConversationKey();
+      const result = await chrome.storage.local.get([key]);
+      if (cancelled) return;
+      setAutoGraphKey(key);
+      setAutoGraphEnabled(result?.[key] === true);
     };
-    chrome.storage.onChanged.addListener(listener);
+
+    void refresh();
+
+    const storageListener = (changes, area) => {
+      if (area !== 'local' || !changes?.[autoGraphKey]) return;
+      setAutoGraphEnabled(changes[autoGraphKey].newValue === true);
+    };
+    chrome.storage.onChanged.addListener(storageListener);
+
+    const tabListener = () => void refresh();
+    chrome.tabs?.onActivated?.addListener(tabListener);
+    chrome.tabs?.onUpdated?.addListener(tabListener);
+
     return () => {
       cancelled = true;
-      chrome.storage.onChanged.removeListener(listener);
+      chrome.storage.onChanged.removeListener(storageListener);
+      chrome.tabs?.onActivated?.removeListener(tabListener);
+      chrome.tabs?.onUpdated?.removeListener(tabListener);
     };
-  }, []);
+  }, [autoGraphKey]);
 
-  const toggleAutoGraph = () => {
-    const next = !autoGraphEnabled;
+  const toggleAutoGraph = async () => {
+    const key = await getActiveConversationKey();
+    const next = key === autoGraphKey ? !autoGraphEnabled : true;
+    setAutoGraphKey(key);
     setAutoGraphEnabled(next);
-    chrome.storage.local.set({ [AUTO_GRAPH_KEY]: next }).catch(() => {});
+    chrome.storage.local.set({ [key]: next }).catch(() => {});
   };
 
   return (
@@ -84,8 +120,8 @@ export default function Header({
           <button
             type="button"
             onClick={toggleAutoGraph}
-            title={autoGraphEnabled ? 'Pause automatic Research Blackboard hints' : 'Enable automatic Research Blackboard hints'}
-            aria-label={autoGraphEnabled ? 'Auto graph on' : 'Auto graph off'}
+            title={autoGraphEnabled ? 'Pause automatic graph maintenance for this chat' : 'Enable automatic graph maintenance for this chat'}
+            aria-label={autoGraphEnabled ? 'Auto graph on for this chat' : 'Auto graph off for this chat'}
             style={{
               border: `1px solid ${autoGraphEnabled ? '#16a34a' : '#cbd5e1'}`,
               background: autoGraphEnabled ? '#ecfdf5' : '#fff',
