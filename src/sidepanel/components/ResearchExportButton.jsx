@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { exportCurrentResearch } from '../utils/researchExport';
+import { importResearchPackage } from '../utils/researchImport';
 
 const FONT_STACK = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
 
@@ -15,6 +16,7 @@ export default function ResearchExportButton() {
   const [busy, setBusy] = useState('');
   const [status, setStatus] = useState('');
   const rootRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -41,13 +43,32 @@ export default function ResearchExportButton() {
     }
   };
 
+  const runImport = async (file) => {
+    if (!file || busy) return;
+    setBusy('import');
+    setStatus('');
+    try {
+      const message = await importResearchPackage(file);
+      setStatus(message);
+      if (!String(message).toLowerCase().includes('cancelled')) {
+        window.setTimeout(() => window.location.reload(), 450);
+      }
+    } catch (error) {
+      console.error('[ResearchImport] failed:', error);
+      setStatus(error?.message || 'Import failed');
+    } finally {
+      setBusy('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   return (
     <div ref={rootRef} style={{ position: 'relative', fontFamily: FONT_STACK }}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        title="Export Research Blackboard"
-        aria-label="Export Research Blackboard"
+        title="Export or import Research Blackboard"
+        aria-label="Export or import Research Blackboard"
         style={{
           width: 28,
           height: 28,
@@ -65,13 +86,21 @@ export default function ResearchExportButton() {
         ⇩
       </button>
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,.rbb.json,application/json"
+        style={{ display: 'none' }}
+        onChange={(event) => runImport(event.target.files?.[0])}
+      />
+
       {open ? (
         <div
           style={{
             position: 'absolute',
             right: 0,
             top: 34,
-            width: 260,
+            width: 268,
             zIndex: 200,
             border: '1px solid #dbe3ee',
             borderRadius: 11,
@@ -110,8 +139,37 @@ export default function ResearchExportButton() {
               <span style={{ gridColumn: '1 / -1', fontSize: 10.5, lineHeight: '15px', color: '#64748b' }}>{option.hint}</span>
             </button>
           ))}
+
+          <div style={{ margin: '5px 5px 3px', borderTop: '1px solid #eef2f7' }} />
+          <div style={{ padding: '3px 6px 5px', fontSize: 12, lineHeight: '16px', fontWeight: 700 }}>Import</div>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!!busy}
+            style={{
+              width: '100%',
+              border: 0,
+              borderRadius: 8,
+              background: busy === 'import' ? '#f1f5f9' : 'transparent',
+              padding: '7px 8px',
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0,1fr) auto',
+              gap: '2px 8px',
+              textAlign: 'left',
+              cursor: busy ? 'wait' : 'pointer',
+              fontFamily: FONT_STACK,
+              color: '#111827'
+            }}
+            onMouseEnter={(event) => { if (!busy) event.currentTarget.style.background = '#f8fafc'; }}
+            onMouseLeave={(event) => { if (busy !== 'import') event.currentTarget.style.background = 'transparent'; }}
+          >
+            <span style={{ fontSize: 12.5, lineHeight: '17px', fontWeight: 600 }}>{busy === 'import' ? 'Importing…' : 'Research package'}</span>
+            <span style={{ fontSize: 11, lineHeight: '16px', color: '#94a3b8' }}>.rbb.json</span>
+            <span style={{ gridColumn: '1 / -1', fontSize: 10.5, lineHeight: '15px', color: '#64748b' }}>Restore into the current conversation</span>
+          </button>
+
           {status ? (
-            <div style={{ marginTop: 5, padding: '6px 7px 2px', borderTop: '1px solid #eef2f7', fontSize: 10.5, lineHeight: '15px', color: status.toLowerCase().includes('failed') || status.startsWith('No ') || status.startsWith('Open ') ? '#b91c1c' : '#64748b' }}>
+            <div style={{ marginTop: 5, padding: '6px 7px 2px', borderTop: '1px solid #eef2f7', fontSize: 10.5, lineHeight: '15px', color: status.toLowerCase().includes('failed') || status.startsWith('No ') || status.startsWith('Open ') || status.startsWith('Invalid ') ? '#b91c1c' : '#64748b' }}>
               {status}
             </div>
           ) : null}
