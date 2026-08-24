@@ -169,6 +169,8 @@ async function handleIncrementalUpdate(updateData) {
 
 /**
  * 处理获取对话请求
+ * Missing DB rows are a normal cache miss during new-chat / SPA transitions.
+ * Do not surface them as background errors or trigger retry storms.
  * @param {Object} payload - 请求数据
  * @returns {Promise<Object>}
  */
@@ -180,7 +182,14 @@ async function handleGetConversation(payload) {
   const conversation = await db.getConversation(conversationId);
 
   if (!conversation) {
-    throw new Error(`Conversation not found: ${conversationId}`);
+    console.debug('[Background] Conversation cache miss:', conversationId);
+    return {
+      found: false,
+      conversation: null,
+      nodes: [],
+      edges: [],
+      rounds: []
+    };
   }
 
   // 获取相关数据（包括 edges）
@@ -191,6 +200,7 @@ async function handleGetConversation(payload) {
   ]);
 
   return {
+    found: true,
     conversation,
     nodes,
     edges,
