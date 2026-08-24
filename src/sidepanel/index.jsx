@@ -7,6 +7,7 @@ import App from './App';
 import AutoGraphDeltaBridge from './components/AutoGraphDeltaBridge';
 import DomGraphDeltaBridge from './components/DomGraphDeltaBridge';
 import ResearchConversationSyncBridge from './components/ResearchConversationSyncBridge';
+import ResearchProjectMirrorBridge from './components/ResearchProjectMirrorBridge';
 import SidecarPresenceBridge from './components/SidecarPresenceBridge';
 import { STORAGE_KEYS } from '../shared/constants';
 
@@ -66,6 +67,7 @@ function renderApp() {
     <React.StrictMode>
       <SidecarPresenceBridge />
       <ResearchConversationSyncBridge />
+      <ResearchProjectMirrorBridge />
       <DomGraphDeltaBridge />
       {/* Legacy reader for existing v2 HTML-comment RGΔ stored in conversation data. */}
       <AutoGraphDeltaBridge />
@@ -82,7 +84,7 @@ try {
     if (area !== 'local') return;
 
     const researchChanged = Object.entries(changes || {}).some(([key, change]) => {
-      if (!key.startsWith('researchBlackboard:')) return false;
+      if (!key.startsWith('researchBlackboard:') && !key.startsWith('researchProjectGraph:')) return false;
       const beforeDelta = change?.oldValue?.metadata?.lastDeltaAt || null;
       const afterDelta = change?.newValue?.metadata?.lastDeltaAt || null;
       const beforeSelection = change?.oldValue?.metadata?.lastSelectionAt || null;
