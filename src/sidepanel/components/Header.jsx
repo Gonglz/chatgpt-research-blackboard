@@ -20,7 +20,11 @@ export default function Header({
   onToggleMiniMap
 }) {
   return (
-    <header className="header header-toolbar" aria-label="ChatGPT Graph Toolbar">
+    <header
+      className="header header-toolbar"
+      aria-label="ChatGPT Graph Toolbar"
+      style={{ minHeight: 38, height: 38, padding: '4px 8px', flexWrap: 'nowrap', gap: 7 }}
+    >
       <div className="header-toolbar-left">
         <div className="view-toggle" role="tablist" aria-label="View mode">
           <button
@@ -53,18 +57,19 @@ export default function Header({
         </div>
       </div>
 
-      <div className="header-toolbar-right">
+      <div className="header-toolbar-right" style={{ gap: 6 }}>
         {viewMode === 'research' && (
           <span
             title="Automatic graph maintenance is active while this sidecar is open"
             aria-label="Research auto mode live"
             style={{
               border: '1px solid #16a34a',
-              background: '#ecfdf5',
+              background: '#f0fdf4',
               color: '#166534',
               borderRadius: 999,
-              padding: '4px 8px',
-              fontSize: 10,
+              padding: '2px 7px',
+              fontSize: 9.5,
+              lineHeight: '14px',
               fontWeight: 700,
               whiteSpace: 'nowrap'
             }}
