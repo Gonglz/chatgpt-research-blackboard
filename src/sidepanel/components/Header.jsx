@@ -10,6 +10,7 @@
 import React from 'react';
 import ResearchExportButton from './ResearchExportButton';
 import ResearchHighlightManager from './ResearchHighlightManager';
+import ResearchProjectSelector from './ResearchProjectSelector';
 
 const iconUrl = (name) => chrome.runtime.getURL(`assets/${name}`);
 
@@ -59,9 +60,10 @@ export default function Header({
         </div>
       </div>
 
-      <div className="header-toolbar-right" style={{ gap: 6 }}>
+      <div className="header-toolbar-right" style={{ gap: 6, minWidth: 0 }}>
         {viewMode === 'research' && (
           <>
+            <ResearchProjectSelector />
             <span
               title="Automatic graph maintenance is active while this sidecar is open"
               aria-label="Research auto mode live"
