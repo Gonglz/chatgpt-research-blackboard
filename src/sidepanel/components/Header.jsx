@@ -7,9 +7,10 @@
  * - Research: semantic Research Blackboard
  */
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 const iconUrl = (name) => chrome.runtime.getURL(`assets/${name}`);
+const AUTO_GRAPH_KEY = 'researchAutoGraphEnabled';
 
 export default function Header({
   onRefresh,
@@ -19,6 +20,31 @@ export default function Header({
   miniMapVisible = false,
   onToggleMiniMap
 }) {
+  const [autoGraphEnabled, setAutoGraphEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    chrome.storage.local.get([AUTO_GRAPH_KEY]).then((result) => {
+      if (!cancelled) setAutoGraphEnabled(result?.[AUTO_GRAPH_KEY] === true);
+    }).catch(() => {});
+
+    const listener = (changes, area) => {
+      if (area !== 'local' || !changes?.[AUTO_GRAPH_KEY]) return;
+      setAutoGraphEnabled(changes[AUTO_GRAPH_KEY].newValue === true);
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => {
+      cancelled = true;
+      chrome.storage.onChanged.removeListener(listener);
+    };
+  }, []);
+
+  const toggleAutoGraph = () => {
+    const next = !autoGraphEnabled;
+    setAutoGraphEnabled(next);
+    chrome.storage.local.set({ [AUTO_GRAPH_KEY]: next }).catch(() => {});
+  };
+
   return (
     <header className="header header-toolbar" aria-label="ChatGPT Graph Toolbar">
       <div className="header-toolbar-left">
@@ -54,6 +80,28 @@ export default function Header({
       </div>
 
       <div className="header-toolbar-right">
+        {viewMode === 'research' && (
+          <button
+            type="button"
+            onClick={toggleAutoGraph}
+            title={autoGraphEnabled ? 'Pause automatic Research Blackboard hints' : 'Enable automatic Research Blackboard hints'}
+            aria-label={autoGraphEnabled ? 'Auto graph on' : 'Auto graph off'}
+            style={{
+              border: `1px solid ${autoGraphEnabled ? '#16a34a' : '#cbd5e1'}`,
+              background: autoGraphEnabled ? '#ecfdf5' : '#fff',
+              color: autoGraphEnabled ? '#166534' : '#64748b',
+              borderRadius: 999,
+              padding: '4px 8px',
+              fontSize: 10,
+              fontWeight: 700,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {autoGraphEnabled ? '● Auto' : '○ Auto'}
+          </button>
+        )}
+
         {viewMode === 'graph' && typeof onToggleMiniMap === 'function' && (
           <button
             className={'minimap-btn' + (miniMapVisible ? ' active' : '')}
