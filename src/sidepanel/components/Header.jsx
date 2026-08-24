@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import ResearchExportButton from './ResearchExportButton';
 
 const iconUrl = (name) => chrome.runtime.getURL(`assets/${name}`);
 
@@ -59,23 +60,26 @@ export default function Header({
 
       <div className="header-toolbar-right" style={{ gap: 6 }}>
         {viewMode === 'research' && (
-          <span
-            title="Automatic graph maintenance is active while this sidecar is open"
-            aria-label="Research auto mode live"
-            style={{
-              border: '1px solid #16a34a',
-              background: '#f0fdf4',
-              color: '#166534',
-              borderRadius: 999,
-              padding: '2px 7px',
-              fontSize: 9.5,
-              lineHeight: '14px',
-              fontWeight: 700,
-              whiteSpace: 'nowrap'
-            }}
-          >
-            ● Live
-          </span>
+          <>
+            <span
+              title="Automatic graph maintenance is active while this sidecar is open"
+              aria-label="Research auto mode live"
+              style={{
+                border: '1px solid #16a34a',
+                background: '#f0fdf4',
+                color: '#166534',
+                borderRadius: 999,
+                padding: '2px 7px',
+                fontSize: 9.5,
+                lineHeight: '14px',
+                fontWeight: 700,
+                whiteSpace: 'nowrap'
+              }}
+            >
+              ● Live
+            </span>
+            <ResearchExportButton />
+          </>
         )}
 
         {viewMode === 'graph' && typeof onToggleMiniMap === 'function' && (
