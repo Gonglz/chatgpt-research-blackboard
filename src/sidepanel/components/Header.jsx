@@ -9,6 +9,7 @@
 
 import React from 'react';
 import ResearchExportButton from './ResearchExportButton';
+import ResearchHighlightManager from './ResearchHighlightManager';
 
 const iconUrl = (name) => chrome.runtime.getURL(`assets/${name}`);
 
@@ -79,6 +80,7 @@ export default function Header({
               ● Live
             </span>
             <ResearchExportButton />
+            <ResearchHighlightManager enabled />
           </>
         )}
 
