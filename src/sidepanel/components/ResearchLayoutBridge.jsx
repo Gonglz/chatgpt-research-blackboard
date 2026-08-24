@@ -27,6 +27,41 @@ function isRelevantStorageChange(changes) {
   return Object.keys(changes || {}).some((key) => STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix)));
 }
 
+function relationOf(edge) {
+  return String(edge?.data?.relation || edge?.label || 'informs').trim().toLowerCase();
+}
+
+/**
+ * Early Selection/Highlight promotion code emitted generated deepens edges as
+ * parent -> child, while RGΔ has always used child -> parent. Those edges are
+ * identifiable by their provenance flags, so migrate them deterministically.
+ *
+ * New legacy-generated edges are also corrected here until all producers have
+ * been converted. deepensDirectionVersion prevents a second reversal.
+ */
+function normalizeGeneratedDeepensDirections(edges = []) {
+  let changed = false;
+  const normalized = edges.map((edge) => {
+    if (relationOf(edge) !== 'deepens') return edge;
+    if (edge?.data?.deepensDirectionVersion === 2) return edge;
+    const generatedLegacy = !!edge?.data?.createdFromSelection || !!edge?.data?.createdFromHighlight;
+    if (!generatedLegacy) return edge;
+
+    changed = true;
+    return {
+      ...edge,
+      source: edge.target,
+      target: edge.source,
+      data: {
+        ...(edge.data || {}),
+        deepensDirectionVersion: 2,
+        directionMigratedAt: Date.now()
+      }
+    };
+  });
+  return { changed, edges: normalized };
+}
+
 /**
  * Automatic layout lives outside ResearchBlackboard on purpose.
  *
@@ -34,7 +69,7 @@ function isRelevantStorageChange(changes) {
  * - node/deepens structural changes -> ELK layout
  * - normal text/focus/selection/cross-edge changes -> no layout
  * - position-only changes -> remember as a soft user preference
- * - layout algorithm upgrades -> one clean relayout, preserving true drag prefs
+ * - layout algorithm upgrades -> one clean relayout
  */
 export default function ResearchLayoutBridge() {
   const timerRef = useRef(null);
@@ -59,21 +94,26 @@ export default function ResearchLayoutBridge() {
         const { graph } = await loadScopedGraphRecord(conversationId);
         if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || !graph.nodes.length) return;
 
-        const nodes = graph.nodes;
-        const edges = graph.edges;
+        const directionMigration = normalizeGeneratedDeepensDirections(graph.edges);
+        const workingGraph = directionMigration.changed
+          ? { ...graph, edges: directionMigration.edges }
+          : graph;
+
+        const nodes = workingGraph.nodes;
+        const edges = workingGraph.edges;
         const signature = researchStructuralSignature(nodes, edges);
-        const previousLayoutState = graph.metadata?.layoutState || {};
+        const previousLayoutState = workingGraph.metadata?.layoutState || {};
         const algorithmCurrent = previousLayoutState.algorithm === RESEARCH_LAYOUT_ALGORITHM;
 
-        if (algorithmCurrent && previousLayoutState.structuralSignature === signature) {
+        if (algorithmCurrent && previousLayoutState.structuralSignature === signature && !directionMigration.changed) {
           const captured = capturePreferredPositions(nodes, previousLayoutState);
           if (!captured.changed) return;
 
           const now = Date.now();
           await writeScopedGraphRecord(conversationId, {
-            ...graph,
+            ...workingGraph,
             metadata: {
-              ...(graph.metadata || {}),
+              ...(workingGraph.metadata || {}),
               layoutState: captured.layoutState,
               lastLayoutPreferenceAt: now
             },
@@ -82,13 +122,14 @@ export default function ResearchLayoutBridge() {
           return;
         }
 
-        // v1 interpreted canonical deepens direction backwards. On the v2
-        // migration we intentionally discard old ELK positions/backbone parents
-        // once, while retaining only explicit soft drag preferences.
+        // v3 is intentionally a true clean relayout. Earlier versions could
+        // accidentally capture bad automatic positions as soft preferences, and
+        // their vertical blending allowed children to drift back onto parent
+        // ranks. Drop all old layout coordinates/preferences once on upgrade.
         const layoutInputState = algorithmCurrent
           ? previousLayoutState
           : {
-              preferredPositions: { ...(previousLayoutState?.preferredPositions || {}) },
+              preferredPositions: {},
               backboneParentByNodeId: {},
               lastAppliedPositions: {}
             };
@@ -98,13 +139,15 @@ export default function ResearchLayoutBridge() {
 
         const now = Date.now();
         await writeScopedGraphRecord(conversationId, {
-          ...graph,
+          ...workingGraph,
           nodes: result.nodes,
+          edges,
           metadata: {
-            ...(graph.metadata || {}),
+            ...(workingGraph.metadata || {}),
             layoutState: result.layoutState,
             lastLayoutAt: now,
-            layoutMigratedAt: algorithmCurrent ? graph.metadata?.layoutMigratedAt : now
+            layoutMigratedAt: algorithmCurrent ? workingGraph.metadata?.layoutMigratedAt : now,
+            generatedDeepensMigratedAt: directionMigration.changed ? now : workingGraph.metadata?.generatedDeepensMigratedAt
           },
           updatedAt: now
         });
