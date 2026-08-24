@@ -65,6 +65,13 @@ const builds = [
     entryPoints: ['src/content/research-producer.js'],
     outfile: 'dist/research-producer.js'
   },
+  // Lightweight selection toolbar for saving answer excerpts as Highlights or
+  // promoting them into semantic Research nodes.
+  {
+    ...commonOptions,
+    entryPoints: ['src/content/research-selection.js'],
+    outfile: 'dist/research-selection.js'
+  },
   {
     ...commonOptions,
     entryPoints: ['src/background/index.js'],
