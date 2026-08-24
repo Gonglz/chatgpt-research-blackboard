@@ -47,17 +47,35 @@ export default function Header({
 
     const refresh = async () => {
       const key = await getActiveConversationKey();
-      const result = await chrome.storage.local.get([key]);
+      const newKey = `${AUTO_GRAPH_PREFIX}new`;
+      const result = await chrome.storage.local.get(key === newKey ? [key] : [key, newKey]);
+      if (cancelled) return;
+
+      let enabled = result?.[key] === true;
+
+      // ChatGPT assigns /c/<id> after the first send. Preserve the staged Auto
+      // choice immediately so the button never appears to switch itself off.
+      // ResearchConversationSyncBridge later clears the one-shot `new` key.
+      if (!enabled && key !== newKey && result?.[newKey] === true) {
+        enabled = true;
+        await chrome.storage.local.set({ [key]: true }).catch(() => {});
+      }
+
       if (cancelled) return;
       setAutoGraphKey(key);
-      setAutoGraphEnabled(result?.[key] === true);
+      setAutoGraphEnabled(enabled);
     };
 
     void refresh();
 
     const storageListener = (changes, area) => {
-      if (area !== 'local' || !changes?.[autoGraphKey]) return;
-      setAutoGraphEnabled(changes[autoGraphKey].newValue === true);
+      if (area !== 'local') return;
+      if (changes?.[autoGraphKey]) {
+        setAutoGraphEnabled(changes[autoGraphKey].newValue === true);
+      }
+      if (changes?.[`${AUTO_GRAPH_PREFIX}new`]) {
+        void refresh();
+      }
     };
     chrome.storage.onChanged.addListener(storageListener);
 
