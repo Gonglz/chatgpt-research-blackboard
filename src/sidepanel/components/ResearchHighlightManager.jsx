@@ -63,14 +63,27 @@ async function mutateSelectedGraph(mutator) {
   return true;
 }
 
-function managerButtonStyle(active) {
-  return {
-    position: 'absolute', right: 42, top: 8, zIndex: 120,
-    height: 24, minWidth: 28, padding: '0 7px',
-    border: active ? '1px solid #94a3b8' : '1px solid #e2e8f0',
-    borderRadius: 7, background: '#fff', color: '#475569',
-    fontFamily: FONT_STACK, fontSize: 11, fontWeight: 650, cursor: 'pointer'
-  };
+function findHighlightCards(detail) {
+  if (!detail) return [];
+  const sourceButtons = Array.from(detail.querySelectorAll('button')).filter((button) => cleanText(button.textContent) === '↗ Source');
+  const cards = [];
+  for (const button of sourceButtons) {
+    const card = button.parentElement;
+    if (!card) continue;
+    const text = cleanText(card.textContent);
+    if (!text.startsWith('★')) continue;
+    if (!cards.includes(card)) cards.push(card);
+  }
+  return cards;
+}
+
+function findEditActionRow(detail) {
+  if (!detail) return null;
+  const edit = Array.from(detail.querySelectorAll('button')).find((button) => {
+    const text = cleanText(button.textContent);
+    return text === 'Edit' || text === 'Done';
+  });
+  return edit?.parentElement || null;
 }
 
 const actionStyle = {
@@ -86,13 +99,102 @@ const actionStyle = {
   cursor: 'pointer'
 };
 
+function ItemActions({
+  highlight,
+  index,
+  total,
+  nodes,
+  selectedNodeId,
+  open,
+  setOpen,
+  reorder,
+  addNote,
+  promote,
+  moveHighlight,
+  deleteHighlight
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(open ? null : highlight.id)}
+        aria-label="Highlight actions"
+        title="Highlight actions"
+        style={{
+          position: 'absolute',
+          right: 7,
+          top: 7,
+          zIndex: 5,
+          width: 25,
+          height: 23,
+          border: '1px solid #dbe3ee',
+          borderRadius: 6,
+          background: open ? '#eef2f7' : '#fff',
+          color: '#64748b',
+          fontFamily: FONT_STACK,
+          cursor: 'pointer'
+        }}
+      >⋯</button>
+
+      {open ? (
+        <div style={{
+          position: 'absolute',
+          right: 7,
+          top: 34,
+          zIndex: 12,
+          width: 'min(235px, calc(100% - 14px))',
+          border: '1px solid #dbe3ee',
+          borderRadius: 8,
+          background: '#fff',
+          boxShadow: '0 10px 24px rgba(15,23,42,.14)',
+          padding: 4,
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 2,
+          fontFamily: FONT_STACK
+        }}>
+          <button type="button" disabled={index === 0} onClick={() => reorder(highlight.id, -1)} style={{ ...actionStyle, opacity: index === 0 ? .4 : 1 }}>↑ Move up</button>
+          <button type="button" disabled={index === total - 1} onClick={() => reorder(highlight.id, 1)} style={{ ...actionStyle, opacity: index === total - 1 ? .4 : 1 }}>↓ Move down</button>
+          <button type="button" onClick={() => addNote(highlight)} style={actionStyle}>{highlight.note ? 'Edit note' : '+ Note'}</button>
+          <button type="button" onClick={() => promote(highlight)} style={actionStyle}>Promote → Node</button>
+          <select
+            defaultValue=""
+            onChange={(event) => {
+              if (event.target.value) moveHighlight(highlight.id, event.target.value);
+            }}
+            style={{
+              gridColumn: '1 / -1',
+              width: '100%',
+              border: '1px solid #cbd5e1',
+              borderRadius: 6,
+              background: '#fff',
+              padding: '5px 6px',
+              fontFamily: FONT_STACK,
+              fontSize: 11,
+              color: '#475569'
+            }}
+          >
+            <option value="">Move to another node…</option>
+            {nodes.filter((node) => node.id !== selectedNodeId).map((node) => (
+              <option key={node.id} value={node.id}>{node.data?.title || node.id}</option>
+            ))}
+          </select>
+          <button type="button" onClick={() => deleteHighlight(highlight.id)} style={{ ...actionStyle, gridColumn: '1 / -1', color: '#b91c1c' }}>Delete highlight</button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export default function ResearchHighlightManager({ enabled = true }) {
   const [detailEl, setDetailEl] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [graph, setGraph] = useState(null);
-  const [open, setOpen] = useState(false);
+  const [cardEls, setCardEls] = useState([]);
+  const [editRowEl, setEditRowEl] = useState(null);
   const [openItemId, setOpenItemId] = useState(null);
   const [status, setStatus] = useState('');
+  const highlightsRef = useRef([]);
   const refreshTimer = useRef(null);
 
   const refresh = async () => {
@@ -101,20 +203,30 @@ export default function ResearchHighlightManager({ enabled = true }) {
     const selectedId = currentSelectedNodeId();
     setDetailEl(detail || null);
     setSelectedNodeId(selectedId || null);
+
     if (!detail || !selectedId) {
       setGraph(null);
-      setOpen(false);
+      setCardEls([]);
+      setEditRowEl(null);
       setOpenItemId(null);
       return;
     }
+
     const loaded = await loadGraph();
     setGraph(loaded.graph || null);
+    const cards = findHighlightCards(detail);
+    for (const card of cards) {
+      card.style.position = 'relative';
+      card.style.paddingRight = '38px';
+    }
+    setCardEls(cards);
+    setEditRowEl(findEditActionRow(detail));
   };
 
   useEffect(() => {
     if (!enabled) return undefined;
     void refresh();
-    refreshTimer.current = window.setInterval(() => { void refresh(); }, 450);
+    refreshTimer.current = window.setInterval(() => { void refresh(); }, 350);
     const listener = (changes, area) => {
       if (area !== 'local') return;
       if (Object.keys(changes || {}).some((key) => key.startsWith('researchBlackboard:') || key.startsWith('researchProjectGraph:'))) void refresh();
@@ -126,11 +238,40 @@ export default function ResearchHighlightManager({ enabled = true }) {
     };
   }, [enabled]);
 
-  const selectedNode = useMemo(() => graph?.nodes?.find((node) => node.id === selectedNodeId) || null, [graph, selectedNodeId]);
+  const selectedNode = useMemo(
+    () => graph?.nodes?.find((node) => node.id === selectedNodeId) || null,
+    [graph, selectedNodeId]
+  );
   const highlights = Array.isArray(selectedNode?.data?.highlights) ? selectedNode.data.highlights : [];
+  highlightsRef.current = highlights;
+
   const promotedParentId = selectedNode?.data?.promotedFromNodeId
     || graph?.edges?.find((edge) => edge.target === selectedNodeId && edge.data?.createdFromHighlight)?.source
     || null;
+
+  useEffect(() => {
+    if (!detailEl) return undefined;
+
+    const handleSourceClick = (event) => {
+      const button = event.target?.closest?.('button');
+      if (!button || cleanText(button.textContent) !== '↗ Source') return;
+      const card = button.parentElement;
+      const cards = findHighlightCards(detailEl);
+      const index = cards.indexOf(card);
+      const highlight = highlightsRef.current[index];
+      if (!highlight) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      void jumpToResearchHighlightSource(highlight, 5000).then((ok) => {
+        setStatus(ok ? 'Exact source located · highlighted for 5s' : 'Exact source not found');
+      });
+    };
+
+    detailEl.addEventListener('click', handleSourceClick, true);
+    return () => detailEl.removeEventListener('click', handleSourceClick, true);
+  }, [detailEl]);
 
   if (!enabled || !detailEl || !selectedNode) return null;
 
@@ -157,7 +298,9 @@ export default function ResearchHighlightManager({ enabled = true }) {
       return {
         ...current,
         nodes: current.nodes.map((node) => {
-          if (node.id === sourceNodeId) return { ...node, data: { ...node.data, highlights: sourceHighlights.filter((highlight) => highlight.id !== highlightId) } };
+          if (node.id === sourceNodeId) {
+            return { ...node, data: { ...node.data, highlights: sourceHighlights.filter((highlight) => highlight.id !== highlightId) } };
+          }
           if (node.id === targetNodeId) {
             const targetHighlights = Array.isArray(node.data?.highlights) ? node.data.highlights : [];
             const duplicate = targetHighlights.some((highlight) => highlight.id === item.id);
@@ -254,11 +397,17 @@ export default function ResearchHighlightManager({ enabled = true }) {
       ...current,
       nodes: [...current.nodes, promoted],
       edges: [...(current.edges || []), {
-        id: makeId('edge'), source: nodeId, target: id, type: 'smoothstep', label: 'deepens',
+        id: makeId('edge'),
+        source: nodeId,
+        target: id,
+        type: 'smoothstep',
+        label: 'deepens',
         data: {
           relation: 'deepens',
           createdFromHighlight: true,
-          sources: highlight.conversationId ? [{ conversationId: highlight.conversationId, messageId: highlight.messageId || null, addedAt: Date.now() }] : []
+          sources: highlight.conversationId
+            ? [{ conversationId: highlight.conversationId, messageId: highlight.messageId || null, addedAt: Date.now() }]
+            : []
         }
       }],
       metadata: { ...(current.metadata || {}), selectedNodeId: id, focusNodeId: id }
@@ -298,91 +447,58 @@ export default function ResearchHighlightManager({ enabled = true }) {
     }, 'Demoted to highlight');
   };
 
-  const panel = (
-    <>
-      <button type="button" onClick={() => setOpen((value) => !value)} style={managerButtonStyle(open)} title="Manage highlights" aria-label="Manage highlights">
-        ★{highlights.length || ''}
-      </button>
+  const portals = cardEls.slice(0, highlights.length).map((card, index) => {
+    const highlight = highlights[index];
+    if (!card || !highlight) return null;
+    return createPortal(
+      <ItemActions
+        key={highlight.id || index}
+        highlight={highlight}
+        index={index}
+        total={highlights.length}
+        nodes={graph.nodes || []}
+        selectedNodeId={selectedNodeId}
+        open={openItemId === highlight.id}
+        setOpen={setOpenItemId}
+        reorder={reorder}
+        addNote={addNote}
+        promote={promote}
+        moveHighlight={moveHighlight}
+        deleteHighlight={deleteHighlight}
+      />,
+      card
+    );
+  });
 
-      {open ? (
-        <div style={{
-          position: 'absolute', right: 8, top: 38, zIndex: 160,
-          width: 'min(310px, calc(100% - 16px))', maxHeight: 'calc(100% - 48px)', overflowY: 'auto',
-          border: '1px solid #dbe3ee', borderRadius: 10, background: '#fff',
-          boxShadow: '0 14px 32px rgba(15,23,42,.18)', padding: 8, fontFamily: FONT_STACK
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '1px 2px 7px' }}>
-            <strong style={{ minWidth: 0, flex: 1, fontSize: 12, lineHeight: '16px', color: '#111827' }}>Highlights · {highlights.length}</strong>
-            {selectedNode.data?.createdFromHighlight && promotedParentId ? (
-              <button type="button" onClick={demote} style={{ ...actionStyle, border: '1px solid #dbe3ee', padding: '3px 6px' }}>↩ Highlight</button>
-            ) : null}
-            <button type="button" onClick={() => setOpen(false)} style={{ ...actionStyle, fontSize: 15, padding: '2px 5px' }}>×</button>
-          </div>
+  if (selectedNode.data?.createdFromHighlight && promotedParentId && editRowEl) {
+    portals.push(createPortal(
+      <button
+        key="demote-highlight"
+        type="button"
+        onClick={demote}
+        style={{
+          border: '1px solid #dbe3ee',
+          borderRadius: 6,
+          background: '#fff',
+          padding: '4px 7px',
+          fontFamily: FONT_STACK,
+          fontSize: 11,
+          color: '#475569',
+          cursor: 'pointer'
+        }}
+      >↩ Highlight</button>,
+      editRowEl
+    ));
+  }
 
-          {!highlights.length ? (
-            <div style={{ padding: '9px 4px', fontSize: 11.5, lineHeight: '17px', color: '#94a3b8' }}>No saved highlights.</div>
-          ) : highlights.map((highlight, index) => {
-            const itemOpen = openItemId === highlight.id;
-            return (
-              <div key={highlight.id || `${highlight.messageId}:${index}`} style={{ position: 'relative', borderTop: index ? '1px solid #eef2f7' : 0, padding: '8px 2px' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const ok = await jumpToResearchHighlightSource(highlight, 5000);
-                      setStatus(ok ? 'Exact source located · highlighted for 5s' : 'Exact source not found');
-                    }}
-                    style={{ flex: 1, minWidth: 0, border: 0, background: 'transparent', padding: 0, textAlign: 'left', fontFamily: FONT_STACK, cursor: 'pointer' }}
-                    title="Jump to exact source sentence"
-                  >
-                    <span style={{ fontSize: 11.5, lineHeight: '17px', color: '#334155' }}>★ “{highlight.quote || ''}”</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOpenItemId(itemOpen ? null : highlight.id)}
-                    aria-label="Highlight actions"
-                    style={{ width: 24, height: 22, border: '1px solid #e2e8f0', borderRadius: 6, background: itemOpen ? '#f1f5f9' : '#fff', color: '#64748b', cursor: 'pointer' }}
-                  >⋯</button>
-                </div>
+  if (status) {
+    portals.push(createPortal(
+      <div key="highlight-status" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 40, padding: '5px 7px', borderRadius: 7, background: 'rgba(255,255,255,.96)', border: '1px solid #e2e8f0', boxShadow: '0 4px 12px rgba(15,23,42,.08)', fontFamily: FONT_STACK, fontSize: 10.5, color: '#64748b', pointerEvents: 'none' }}>
+        {status}
+      </div>,
+      detailEl
+    ));
+  }
 
-                {highlight.note ? (
-                  <div style={{ marginTop: 4, paddingLeft: 12, borderLeft: '2px solid #e2e8f0', fontSize: 10.8, lineHeight: '15px', color: '#64748b' }}>
-                    {highlight.note}
-                  </div>
-                ) : null}
-
-                {itemOpen ? (
-                  <div style={{ marginTop: 6, border: '1px solid #e2e8f0', borderRadius: 8, background: '#f8fafc', padding: 4, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
-                    <button type="button" disabled={index === 0} onClick={() => reorder(highlight.id, -1)} style={{ ...actionStyle, opacity: index === 0 ? .4 : 1 }}>↑ Move up</button>
-                    <button type="button" disabled={index === highlights.length - 1} onClick={() => reorder(highlight.id, 1)} style={{ ...actionStyle, opacity: index === highlights.length - 1 ? .4 : 1 }}>↓ Move down</button>
-                    <button type="button" onClick={() => addNote(highlight)} style={actionStyle}>{highlight.note ? 'Edit note' : '+ Note'}</button>
-                    <button type="button" onClick={() => promote(highlight)} style={actionStyle}>Promote → Node</button>
-                    <select
-                      defaultValue=""
-                      onChange={(event) => {
-                        if (event.target.value) moveHighlight(highlight.id, event.target.value);
-                      }}
-                      style={{ gridColumn: '1 / -1', width: '100%', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', padding: '5px 6px', fontFamily: FONT_STACK, fontSize: 11, color: '#475569' }}
-                    >
-                      <option value="">Move to another node…</option>
-                      {(graph.nodes || []).filter((node) => node.id !== selectedNodeId).map((node) => (
-                        <option key={node.id} value={node.id}>{node.data?.title || node.id}</option>
-                      ))}
-                    </select>
-                    <button type="button" onClick={() => deleteHighlight(highlight.id)} style={{ ...actionStyle, gridColumn: '1 / -1', color: '#b91c1c' }}>Delete highlight</button>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-
-          {status ? (
-            <div style={{ marginTop: 4, padding: '6px 3px 1px', borderTop: '1px solid #eef2f7', fontSize: 10.5, lineHeight: '15px', color: '#64748b' }}>{status}</div>
-          ) : null}
-        </div>
-      ) : null}
-    </>
-  );
-
-  return createPortal(panel, detailEl);
+  return <>{portals}</>;
 }
