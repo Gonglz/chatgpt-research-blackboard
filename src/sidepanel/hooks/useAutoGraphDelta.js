@@ -6,6 +6,8 @@ import {
   stripGraphDeltaBlocks
 } from '../utils/graphDelta';
 
+const PROCESSOR_VERSION = 3;
+
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -14,11 +16,6 @@ function normalizeRole(value) {
   return cleanText(value).toLowerCase();
 }
 
-/**
- * Automatic execution is intentionally stricter than the general parser:
- * only hidden HTML-comment transport blocks are trusted. Visible RGΔ code
- * examples remain inert and can be used safely in normal discussion/debugging.
- */
 function extractTransportBlocks(content) {
   const text = String(content || '');
   const blocks = [];
@@ -63,11 +60,6 @@ function isAssistantRole(role) {
   return role === 'assistant' || role === 'tool' || role === 'model';
 }
 
-/**
- * Watches conversation data for assistant messages containing hidden RGΔ
- * transport blocks. Each source message is applied at most once and recorded
- * in graph metadata.
- */
 export function useAutoGraphDelta(conversationData) {
   const [revision, setRevision] = useState(0);
   const [lastResult, setLastResult] = useState(null);
@@ -101,7 +93,11 @@ export function useAutoGraphDelta(conversationData) {
       const graph = await loadResearchGraph(conversationId);
       if (cancelled || runToken !== runTokenRef.current) return;
 
-      const applied = new Set(graph.metadata?.appliedDeltaMessageIds || []);
+      const processorChanged = graph.metadata?.graphDeltaProcessorVersion !== PROCESSOR_VERSION;
+      const applied = new Set(
+        processorChanged ? [] : (graph.metadata?.appliedDeltaMessageIds || [])
+      );
+
       let state = {
         nodes: graph.nodes || [],
         edges: graph.edges || [],
@@ -151,6 +147,11 @@ export function useAutoGraphDelta(conversationData) {
       }
 
       if (!appliedNow.length) {
+        if (processorChanged) {
+          await saveResearchGraph(conversationId, state.nodes, state.edges, {
+            graphDeltaProcessorVersion: PROCESSOR_VERSION
+          });
+        }
         if (errors.length) setLastResult({ applied: 0, changes: [], errors });
         return;
       }
@@ -161,6 +162,7 @@ export function useAutoGraphDelta(conversationData) {
         state.edges,
         {
           appliedDeltaMessageIds: Array.from(applied).slice(-500),
+          graphDeltaProcessorVersion: PROCESSOR_VERSION,
           focusNodeId: state.focusNodeId,
           lastDeltaAt: Date.now()
         }
@@ -176,6 +178,8 @@ export function useAutoGraphDelta(conversationData) {
       });
       setRevision((value) => value + 1);
       console.log('[ResearchBlackboard] Applied hidden RGΔ:', {
+        processorVersion: PROCESSOR_VERSION,
+        reprocessed: processorChanged,
         messages: appliedNow.length,
         changes,
         errors
