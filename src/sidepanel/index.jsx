@@ -7,6 +7,7 @@ import App from './App';
 import AutoGraphDeltaBridge from './components/AutoGraphDeltaBridge';
 import DomGraphDeltaBridge from './components/DomGraphDeltaBridge';
 import ResearchConversationSyncBridge from './components/ResearchConversationSyncBridge';
+import ResearchFocusBridge from './components/ResearchFocusBridge';
 import ResearchHighlightManager from './components/ResearchHighlightManager';
 import ResearchLayoutBridge from './components/ResearchLayoutBridge';
 import ResearchProjectMirrorBridge from './components/ResearchProjectMirrorBridge';
@@ -71,6 +72,7 @@ function renderApp() {
       <ResearchConversationSyncBridge />
       <ResearchProjectMirrorBridge />
       <ResearchLayoutBridge />
+      <ResearchFocusBridge />
       <ResearchHighlightManager />
       <DomGraphDeltaBridge />
       {/* Legacy reader for existing v2 HTML-comment RGΔ stored in conversation data. */}
