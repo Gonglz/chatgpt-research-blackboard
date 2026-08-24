@@ -101,10 +101,30 @@ function reconcileMirrorMutation(canonical, local, conversationId) {
   return { ...local, nodes, edges };
 }
 
+function mirrorFromCanonical(canonical, conversationId, projectId, now) {
+  return {
+    ...canonical,
+    conversationId,
+    projectId,
+    metadata: {
+      ...(canonical.metadata || {}),
+      projectId,
+      researchScope: 'project',
+      projectMirrorOf: projectId,
+      projectMirrorAt: now
+    },
+    updatedAt: now
+  };
+}
+
 /**
- * Compatibility bridge for the selection content script. It writes the per-chat
- * mirror; only the changed/new material is reconciled into the canonical project
- * graph so provenance is not sprayed across unrelated project nodes.
+ * Compatibility bridge for the selection content script.
+ *
+ * - canonical newer -> refresh this chat's mirror before it can write stale data
+ * - mirror newer -> reconcile only local/new material into canonical
+ *
+ * This gives the project graph one canonical clock while preserving the legacy
+ * per-chat key used by the page content script.
  */
 export default function ResearchProjectMirrorBridge() {
   useEffect(() => {
@@ -126,15 +146,22 @@ export default function ResearchProjectMirrorBridge() {
         const localKey = conversationGraphKey(conversationId);
         const canonicalKey = projectGraphKey(projectId);
         const records = await chrome.storage.local.get([localKey, canonicalKey]);
-        const local = records?.[localKey];
-        const canonical = records?.[canonicalKey];
-        if (!local || !Array.isArray(local.nodes)) return;
+        const local = records?.[localKey] || null;
+        const canonical = records?.[canonicalKey] || null;
+        if (!canonical || !Array.isArray(canonical.nodes)) return;
 
-        const localUpdated = Number(local.updatedAt || 0);
-        const canonicalUpdated = Number(canonical?.updatedAt || 0);
-        const selectionAt = Number(local.metadata?.lastSelectionAt || 0);
-        const canonicalSelectionAt = Number(canonical?.metadata?.lastSelectionAt || 0);
-        if (localUpdated <= canonicalUpdated && selectionAt <= canonicalSelectionAt) return;
+        const localUpdated = Number(local?.updatedAt || 0);
+        const canonicalUpdated = Number(canonical.updatedAt || 0);
+
+        if (!local || canonicalUpdated > localUpdated) {
+          const now = Date.now();
+          await chrome.storage.local.set({
+            [localKey]: mirrorFromCanonical(canonical, conversationId, projectId, now)
+          });
+          return;
+        }
+
+        if (localUpdated <= canonicalUpdated) return;
 
         const reconciled = reconcileMirrorMutation(canonical, local, conversationId);
         const now = Date.now();
@@ -154,15 +181,7 @@ export default function ResearchProjectMirrorBridge() {
         };
         await chrome.storage.local.set({
           [canonicalKey]: canonicalPayload,
-          [localKey]: {
-            ...canonicalPayload,
-            conversationId,
-            metadata: {
-              ...(canonicalPayload.metadata || {}),
-              projectMirrorOf: projectId,
-              projectMirrorAt: now
-            }
-          }
+          [localKey]: mirrorFromCanonical(canonicalPayload, conversationId, projectId, now)
         });
       } catch (error) {
         console.debug('[ResearchProjectMirror] sync failed:', error?.message || error);
@@ -172,7 +191,7 @@ export default function ResearchProjectMirrorBridge() {
     };
 
     void sync();
-    timer = window.setInterval(() => { void sync(); }, 700);
+    timer = window.setInterval(() => { void sync(); }, 600);
     return () => {
       cancelled = true;
       if (timer) window.clearInterval(timer);
