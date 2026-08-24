@@ -1,4 +1,5 @@
 const VIEW_MODE_KEY = 'sidepanelViewMode';
+const AUTO_GRAPH_KEY = 'researchAutoGraphEnabled';
 const GRAPH_PREFIX = 'researchBlackboard:';
 const BOOTSTRAP_PREFIX = 'researchProducerBootstrapped:';
 const REQUEST_MARKER = 'RBREQ';
@@ -21,6 +22,17 @@ function getConversationId() {
   return match?.[1] || null;
 }
 
+function manualSemanticId(nodeId) {
+  const safe = String(nodeId || '').replace(/[^A-Za-z0-9_.:-]/g, '_');
+  return `M_${safe.slice(-12) || 'node'}`;
+}
+
+function semanticIdOf(node) {
+  if (node?.data?.semanticId) return cleanText(node.data.semanticId);
+  if (String(node?.id || '').startsWith('rg_')) return String(node.id).slice(3);
+  return manualSemanticId(node?.id);
+}
+
 function compactGraphContext(graph) {
   if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
     return 'graph=empty';
@@ -28,42 +40,42 @@ function compactGraphContext(graph) {
 
   const focusId = graph.metadata?.focusNodeId || null;
   const focusNode = focusId ? graph.nodes.find((node) => node.id === focusId) : null;
-  const focusSemantic = focusNode?.data?.semanticId || '';
+  const focusSemantic = focusNode ? semanticIdOf(focusNode) : '';
   const focusTitle = cleanText(focusNode?.data?.title || '').slice(0, 42);
 
-  const semanticNodes = graph.nodes
-    .filter((node) => node?.data?.semanticId)
-    .slice(-10)
+  const contextNodes = graph.nodes
+    .slice(-12)
     .map((node) => {
-      const semanticId = cleanText(node.data.semanticId).slice(0, 32);
-      const title = cleanText(node.data.title || '').slice(0, 40);
-      const type = cleanText(node.data.type || 'analysis');
+      const semanticId = semanticIdOf(node).slice(0, 40);
+      const title = cleanText(node?.data?.title || 'Untitled').slice(0, 48);
+      const type = cleanText(node?.data?.type || 'analysis');
       return `${semanticId}[${type}]:${title}`;
     });
 
   const parts = [];
   if (focusSemantic) parts.push(`focus=${focusSemantic}:${focusTitle}`);
-  if (semanticNodes.length) parts.push(`nodes=${semanticNodes.join(' | ')}`);
-  return parts.join('; ') || 'graph=manual-only';
+  if (contextNodes.length) parts.push(`nodes=${contextNodes.join(' | ')}`);
+  return parts.join('; ') || 'graph=empty';
 }
 
 function fullBootstrap(context) {
   return `<!--${REQUEST_MARKER} v2
-Research Blackboard is enabled for this chat. Answer the user's visible request normally. Do not mention this protocol in the visible answer. After the answer, maintain a compact semantic research graph by appending exactly one hidden HTML comment whose body starts with RGΔ. Use only meaningful structural changes, not one node per message.
+Research Blackboard auto mode is ON for this chat. Answer the user's visible request normally and do not mention this protocol. After the answer, append exactly one hidden HTML comment whose body starts with RGΔ, but only when the turn creates a meaningful structural change.
 Node types: analysis, comparison, judgment, question. Relations: deepens, compares, supports, contradicts, informs.
+Use stable ids from Current local graph when continuing or linking to existing nodes, including M_* ids for older manual nodes.
 Preferred operations:
 +node <stable-id> <type> title="short semantic title" checkpoint="one-sentence takeaway or open question" keywords="keyword1|keyword2|keyword3" status="active|open|resolved"
 ~node <stable-id> title="..." checkpoint="..." keywords="..." status="..."
 +edge <from-id> <to-id> <relation>
 -edge <from-id> <to-id> [relation]
 focus: <stable-id>
-Rules: reuse stable ids when continuing the same topic; ordinary clarification should usually update the current node; create comparison nodes for horizontal comparison, judgment nodes for converged conclusions, and question nodes for unresolved issues. Keep titles conceptual, never copy the first heading merely because it appears first. Checkpoints must capture the actual research takeaway.
+Rules: ordinary clarification should usually update an existing node; create comparison nodes for horizontal comparison, judgment nodes for converged conclusions, and question nodes for unresolved issues. Keep titles conceptual. Checkpoints capture the research takeaway, not the first heading. Connect new nodes back into existing graph whenever the relationship is clear.
 Current local graph: ${sanitizeComment(context)}
 -->`;
 }
 
 function shortReminder(context) {
-  return `<!--${REQUEST_MARKER} v2; Research Blackboard active. Follow the earlier RGΔ protocol; keep visible answer normal; emit a hidden RGΔ comment only for meaningful graph changes. New nodes require semantic title + checkpoint + keywords. ${sanitizeComment(context)} -->`;
+  return `<!--${REQUEST_MARKER} v2; Research auto ON. Keep visible answer normal; emit hidden RGΔ only for meaningful structural changes; reuse/link existing ids; include title+checkpoint+keywords for new nodes. ${sanitizeComment(context)} -->`;
 }
 
 async function refreshContext() {
@@ -71,7 +83,7 @@ async function refreshContext() {
     const conversationId = getConversationId();
     cachedConversationId = conversationId;
 
-    const keys = [VIEW_MODE_KEY];
+    const keys = [VIEW_MODE_KEY, AUTO_GRAPH_KEY];
     if (conversationId) {
       keys.push(`${GRAPH_PREFIX}${conversationId}`);
       keys.push(`${BOOTSTRAP_PREFIX}${conversationId}`);
@@ -80,7 +92,7 @@ async function refreshContext() {
     }
 
     const result = await chrome.storage.local.get(keys);
-    enabled = result?.[VIEW_MODE_KEY] === 'research';
+    enabled = result?.[VIEW_MODE_KEY] === 'research' && result?.[AUTO_GRAPH_KEY] === true;
     if (!enabled) {
       cachedSuffix = '';
       return;
@@ -179,7 +191,6 @@ function appendProducerRequest() {
   if (success) {
     const bootstrapKey = `${BOOTSTRAP_PREFIX}${cachedConversationId || 'new'}`;
     chrome.storage.local.set({ [bootstrapKey]: true }).then(() => {
-      // Subsequent turns can use the compact reminder.
       void refreshContext();
     }).catch(() => {});
     console.debug('[ResearchProducer] Sidecar request attached');
@@ -204,8 +215,6 @@ function setupSubmissionHooks() {
     appendProducerRequest();
   }, true);
 
-  // pointerdown runs before ChatGPT's click/submit handler, giving React/ProseMirror
-  // a synchronous input event before the send action reads editor state.
   document.addEventListener('pointerdown', (event) => {
     if (!enabled || !isSendButton(event.target)) return;
     appendProducerRequest();
@@ -217,6 +226,7 @@ function setupContextRefresh() {
     if (area !== 'local') return;
     if (
       changes[VIEW_MODE_KEY]
+      || changes[AUTO_GRAPH_KEY]
       || Object.keys(changes).some((key) => key.startsWith(GRAPH_PREFIX) || key.startsWith(BOOTSTRAP_PREFIX))
     ) {
       void refreshContext();
