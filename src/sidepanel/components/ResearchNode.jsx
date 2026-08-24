@@ -15,6 +15,7 @@ import { Handle, Position, useStore } from '@xyflow/react';
 const TYPE_META = {
   analysis: { label: 'Analysis', accent: '#2563eb' },
   comparison: { label: 'Compare', accent: '#7c3aed' },
+  synthesis: { label: 'Synthesis', accent: '#0891b2' },
   judgment: { label: 'Judgment', accent: '#059669' },
   question: { label: 'Question', accent: '#d97706' }
 };
