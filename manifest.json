@@ -39,7 +39,8 @@
         "https://chat.openai.com/*"
       ],
       "js": [
-        "dist/content.js"
+        "dist/content.js",
+        "dist/research-producer.js"
       ],
       "run_at": "document_idle"
     }
