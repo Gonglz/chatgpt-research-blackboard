@@ -1,4 +1,5 @@
 import { resolveResearchScope, writeScopedGraphRecord } from '../../shared/researchScope';
+import { layoutStateForImportedGraph } from './researchLayout';
 
 const PACKAGE_FORMAT = 'chatgpt-research-blackboard';
 const SUPPORTED_NODE_TYPES = new Set(['analysis', 'comparison', 'judgment', 'question']);
@@ -82,6 +83,10 @@ function normalizeGraph(graph, conversationId, sourceConversationId, scope) {
     };
   });
 
+  const importedAt = Date.now();
+  const previousLayoutState = graph.metadata?.layoutState || {};
+  const layoutState = layoutStateForImportedGraph(nodes, edges, previousLayoutState);
+
   return {
     schemaVersion: Math.max(2, Number(graph.schemaVersion) || 2),
     conversationId: scope?.type === 'project' ? null : conversationId,
@@ -93,11 +98,12 @@ function normalizeGraph(graph, conversationId, sourceConversationId, scope) {
       selectedNodeId: null,
       researchScope: scope?.type || 'conversation',
       projectId: scope?.projectId || null,
-      importedAt: Date.now(),
+      importedAt,
       importedFromConversationId: sourceConversationId || null,
-      importSourceMatchedConversation: !!sourceConversationId && sourceConversationId === conversationId
+      importSourceMatchedConversation: !!sourceConversationId && sourceConversationId === conversationId,
+      layoutState
     },
-    updatedAt: Date.now()
+    updatedAt: importedAt
   };
 }
 
