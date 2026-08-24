@@ -47,9 +47,7 @@ function normalizeRelation(value) {
 }
 
 function normalizeKeywords(value) {
-  if (Array.isArray(value)) {
-    return value.map(cleanText).filter(Boolean).slice(0, 6);
-  }
+  if (Array.isArray(value)) return value.map(cleanText).filter(Boolean).slice(0, 6);
   return String(value || '')
     .split(/[|｜,，、;/；]+/)
     .map(cleanText)
@@ -67,13 +65,6 @@ function normalizeNodePatch(patch = {}) {
   return next;
 }
 
-/**
- * Extract RGΔ payloads from assistant text.
- * Preferred transport is an HTML comment so the protocol is invisible in ChatGPT:
- *   <!--RGΔ\n...\n-->
- * Fenced/plain forms are supported for manual debugging only. Automatic execution
- * uses a stricter extractor in useAutoGraphDelta and trusts hidden comments only.
- */
 export function extractGraphDeltaBlocks(content) {
   const text = String(content || '');
   const blocks = [];
@@ -85,17 +76,7 @@ export function extractGraphDeltaBlocks(content) {
   }
 
   const fenceRe = /```(?:rgdelta|rgΔ|text)?\s*\n?\s*(RGΔ[\s\S]*?)```/gi;
-  while ((match = fenceRe.exec(text)) !== null) {
-    blocks.push(match[1].trim());
-  }
-
-  if (blocks.length === 0) {
-    const marker = text.indexOf('RGΔ');
-    if (marker >= 0) {
-      const tail = text.slice(marker).trim();
-      if (tail.split(/\r?\n/).length >= 2) blocks.push(tail);
-    }
-  }
+  while ((match = fenceRe.exec(text)) !== null) blocks.push(match[1].trim());
 
   return [...new Set(blocks)];
 }
@@ -108,27 +89,35 @@ export function stripGraphDeltaBlocks(content) {
 }
 
 /**
- * RGΔ v0.2 grammar.
- *
- * Backward-compatible compact form:
- *   +node A1 analysis "Business model"
- *
- * Preferred semantic-hint form:
- *   +node A1 analysis title="Business model" checkpoint="High switching costs" keywords="SaaS|retention" status="active"
- *
- * Other operations:
- *   focus: A1
- *   ~node A1 checkpoint="Updated judgment" keywords="pricing|margin"
- *   +edge A1 C1 compares
- *   -edge A1 C1 [compares]
+ * Split protocol operations even when ChatGPT serializes the hidden comment as
+ * one physical line. Operation markers inside quoted values are intentionally
+ * very unlikely; keeping the transport compact is more important here.
+ */
+function protocolLines(block) {
+  const raw = String(block || '').trim();
+  if (!raw.startsWith('RGΔ')) return [];
+  const body = raw.slice(3).trim();
+  if (!body) return ['RGΔ'];
+
+  const normalized = body.replace(
+    /\s+(?=(?:\+node\s+|~node\s+|\+edge\s+|-edge\s+|focus\s*:))/g,
+    '\n'
+  );
+
+  return ['RGΔ', ...normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)];
+}
+
+/**
+ * RGΔ v0.2 grammar:
+ * +node A1 analysis title="Business model" checkpoint="..." keywords="x|y" status="active"
+ * ~node A1 title="..." checkpoint="..." keywords="..." status="..."
+ * +edge A1 C1 compares
+ * -edge A1 C1 [compares]
+ * focus: A1
  */
 export function parseGraphDelta(block) {
-  const lines = String(block || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (!lines.length || !lines[0].startsWith('RGΔ')) {
+  const lines = protocolLines(block);
+  if (!lines.length || lines[0] !== 'RGΔ') {
     return { version: 2, operations: [], errors: ['Missing RGΔ marker'] };
   }
 
@@ -146,21 +135,21 @@ export function parseGraphDelta(block) {
     }
 
     if (line.startsWith('+node ')) {
-      const tokens = tokenize(line);
-      if (tokens.length < 3) {
+      const match = line.match(/^\+node\s+(\S+)\s+(\S+)\s+([\s\S]+)$/);
+      if (!match) {
         errors.push(`Line ${i + 1}: invalid +node`);
         continue;
       }
 
-      const semanticId = tokens[1];
-      const nodeType = normalizeNodeType(tokens[2]);
-      const rest = line.slice(line.indexOf(tokens[2]) + tokens[2].length).trim();
+      const semanticId = match[1];
+      const nodeType = normalizeNodeType(match[2]);
+      const rest = match[3].trim();
       const assignmentMode = /(?:^|\s)(?:title|checkpoint|keywords|status)=/.test(rest);
 
       if (assignmentMode) {
         const patch = normalizeNodePatch(parseAssignments(rest));
         if (!patch.title) {
-          errors.push(`Line ${i + 1}: +node semantic-hint form requires title=`);
+          errors.push(`Line ${i + 1}: +node semantic form requires title=`);
           continue;
         }
         operations.push({
@@ -173,15 +162,11 @@ export function parseGraphDelta(block) {
           status: patch.status || null
         });
       } else {
-        if (tokens.length < 4) {
-          errors.push(`Line ${i + 1}: invalid +node`);
-          continue;
-        }
         operations.push({
           op: 'addNode',
           semanticId,
           nodeType,
-          title: unquote(tokens.slice(3).join(' ')),
+          title: unquote(rest),
           checkpoint: '',
           keywords: [],
           status: null
@@ -191,15 +176,16 @@ export function parseGraphDelta(block) {
     }
 
     if (line.startsWith('~node ')) {
-      const tokens = tokenize(line);
-      if (tokens.length < 3) {
+      const match = line.match(/^~node\s+(\S+)\s+([\s\S]+)$/);
+      if (!match) {
         errors.push(`Line ${i + 1}: invalid ~node`);
         continue;
       }
-      const semanticId = tokens[1];
-      const assignmentText = line.slice(line.indexOf(semanticId) + semanticId.length).trim();
-      const patch = normalizeNodePatch(parseAssignments(assignmentText));
-      operations.push({ op: 'updateNode', semanticId, patch });
+      operations.push({
+        op: 'updateNode',
+        semanticId: match[1],
+        patch: normalizeNodePatch(parseAssignments(match[2]))
+      });
       continue;
     }
 
@@ -243,8 +229,15 @@ function internalNodeId(semanticId) {
   return `rg_${String(semanticId).replace(/[^A-Za-z0-9_.:-]/g, '_')}`;
 }
 
+function manualSemanticId(nodeId) {
+  const safe = String(nodeId || '').replace(/[^A-Za-z0-9_.:-]/g, '_');
+  return `M_${safe.slice(-12) || 'node'}`;
+}
+
 function semanticIdOf(node) {
-  return node?.data?.semanticId || (String(node?.id || '').startsWith('rg_') ? String(node.id).slice(3) : null);
+  if (node?.data?.semanticId) return node.data.semanticId;
+  if (String(node?.id || '').startsWith('rg_')) return String(node.id).slice(3);
+  return manualSemanticId(node?.id);
 }
 
 function findNodeBySemanticId(nodes, semanticId) {
@@ -293,12 +286,31 @@ function applySemanticFields(data, operation) {
   if (operation.status) data.status = operation.status;
 }
 
-/**
- * Pure reducer. Manual user edits win over AI updates when an *Edited flag is set.
- */
+function applyContextAnchor(data, context) {
+  if (!context?.messageId || data.anchorLocked) return;
+
+  const history = Array.isArray(data.sourceMessageIds) ? data.sourceMessageIds.slice() : [];
+  if (!history.includes(context.messageId)) history.push(context.messageId);
+  data.sourceMessageIds = history.slice(-8);
+
+  // Primary anchor follows the latest assistant turn that materially updated the
+  // semantic node. This avoids stale branch anchors on comparison/question nodes.
+  data.messageId = context.messageId;
+  data.messageRole = context.role || 'assistant';
+  data.messagePreview = context.preview || '';
+  data.messageTail = context.tail || '';
+  data.messageTextLength = context.textLength || 0;
+  data.messageIndex = Number.isInteger(context.messageIndex) ? context.messageIndex : -1;
+  data.messageRoleIndex = Number.isInteger(context.roleIndex) ? context.roleIndex : -1;
+}
+
 export function applyGraphDelta(graph, delta, context = {}) {
-  let nodes = Array.isArray(graph?.nodes) ? graph.nodes.map((node) => ({ ...node, data: { ...node.data } })) : [];
-  let edges = Array.isArray(graph?.edges) ? graph.edges.map((edge) => ({ ...edge, data: { ...edge.data } })) : [];
+  let nodes = Array.isArray(graph?.nodes)
+    ? graph.nodes.map((node) => ({ ...node, data: { ...node.data } }))
+    : [];
+  let edges = Array.isArray(graph?.edges)
+    ? graph.edges.map((edge) => ({ ...edge, data: { ...edge.data } }))
+    : [];
   let focusNodeId = graph?.focusNodeId || null;
   const changes = [];
 
@@ -309,18 +321,17 @@ export function applyGraphDelta(graph, delta, context = {}) {
       const existing = findNodeBySemanticId(nodes, operation.semanticId);
       if (existing) {
         existing.data.type = existing.data.typeEdited ? existing.data.type : operation.nodeType;
-        applySemanticFields(existing.data, operation);
+        existing.data.semanticId = existing.data.semanticId || operation.semanticId;
         existing.data.autoGenerated = true;
-        existing.data.semanticId = operation.semanticId;
-        if (!existing.data.messageId && context.messageId) existing.data.messageId = context.messageId;
+        applySemanticFields(existing.data, operation);
+        applyContextAnchor(existing.data, context);
         changes.push(`~node ${operation.semanticId}`);
         continue;
       }
 
       const focusNode = focusNodeId ? nodes.find((node) => node.id === focusNodeId) : null;
-      const actualId = internalNodeId(operation.semanticId);
       const node = {
-        id: actualId,
+        id: internalNodeId(operation.semanticId),
         type: 'researchNode',
         position: makePosition(nodes.length, focusNode),
         data: {
@@ -337,15 +348,10 @@ export function applyGraphDelta(graph, delta, context = {}) {
           keywordsSource: operation.keywords?.length ? 'ai' : null,
           keywordsEdited: false,
           status: operation.status || null,
-          messageId: context.messageId || null,
-          messageRole: context.role || 'assistant',
-          messagePreview: context.preview || '',
-          messageTail: context.tail || '',
-          messageTextLength: context.textLength || 0,
-          messageIndex: Number.isInteger(context.messageIndex) ? context.messageIndex : -1,
-          messageRoleIndex: Number.isInteger(context.roleIndex) ? context.roleIndex : -1
+          sourceMessageIds: []
         }
       };
+      applyContextAnchor(node.data, context);
       nodes.push(node);
       changes.push(`+node ${operation.semanticId}`);
       continue;
@@ -369,15 +375,7 @@ export function applyGraphDelta(graph, delta, context = {}) {
       }
       if (patch.type && !node.data.typeEdited) node.data.type = normalizeNodeType(patch.type);
       if (patch.status) node.data.status = patch.status;
-      if (context.messageId) {
-        node.data.messageId = context.messageId;
-        node.data.messageRole = context.role || 'assistant';
-        node.data.messagePreview = context.preview || node.data.messagePreview || '';
-        node.data.messageTail = context.tail || node.data.messageTail || '';
-        node.data.messageTextLength = context.textLength || node.data.messageTextLength || 0;
-        node.data.messageIndex = Number.isInteger(context.messageIndex) ? context.messageIndex : node.data.messageIndex;
-        node.data.messageRoleIndex = Number.isInteger(context.roleIndex) ? context.roleIndex : node.data.messageRoleIndex;
-      }
+      applyContextAnchor(node.data, context);
       changes.push(`~node ${operation.semanticId}`);
       continue;
     }
@@ -385,8 +383,15 @@ export function applyGraphDelta(graph, delta, context = {}) {
     if (operation.op === 'addEdge') {
       const source = getActualId(operation.from);
       const target = getActualId(operation.to);
-      if (!nodes.some((node) => node.id === source) || !nodes.some((node) => node.id === target)) continue;
-      const duplicate = edges.some((edge) => edge.source === source && edge.target === target && (edge.data?.relation || edge.label) === operation.relation);
+      if (!nodes.some((node) => node.id === source) || !nodes.some((node) => node.id === target)) {
+        changes.push(`!edge ${operation.from} ${operation.to}`);
+        continue;
+      }
+      const duplicate = edges.some((edge) => (
+        edge.source === source
+        && edge.target === target
+        && (edge.data?.relation || edge.label) === operation.relation
+      ));
       if (duplicate) continue;
       edges.push({
         id: deterministicEdgeId(source, target, operation.relation),
@@ -394,7 +399,8 @@ export function applyGraphDelta(graph, delta, context = {}) {
         target,
         type: 'smoothstep',
         label: operation.relation,
-        data: { relation: operation.relation, autoGenerated: true }
+        data: { relation: operation.relation, autoGenerated: true },
+        style: { strokeWidth: 1.6 }
       });
       changes.push(`+edge ${operation.from} ${operation.to}`);
       continue;
