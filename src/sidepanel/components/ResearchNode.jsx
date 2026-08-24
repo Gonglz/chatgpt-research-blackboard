@@ -1,147 +1,193 @@
 /**
- * Research Blackboard semantic node.
- * A research node represents a question/analysis/comparison/judgment,
- * not a raw ChatGPT message.
+ * Compact semantic node for Research Blackboard.
+ *
+ * Canvas nodes are intentionally identifiers, not detail containers:
+ * - fixed footprint for spatial stability
+ * - title + type + compact keywords + highlight count only
+ * - checkpoint is available through delayed hover preview / detail drawer
  */
-import React, { memo } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import React, { memo, useEffect, useRef, useState } from 'react';
+import { Handle, Position, useStore } from '@xyflow/react';
 
 const TYPE_META = {
-  analysis: { label: 'Analysis', accent: '#2563eb', bg: '#eff6ff' },
-  comparison: { label: 'Compare', accent: '#7c3aed', bg: '#f5f3ff' },
-  judgment: { label: 'Judgment', accent: '#059669', bg: '#ecfdf5' },
-  question: { label: 'Question', accent: '#d97706', bg: '#fffbeb' }
+  analysis: { label: 'Analysis', accent: '#2563eb' },
+  comparison: { label: 'Compare', accent: '#7c3aed' },
+  judgment: { label: 'Judgment', accent: '#059669' },
+  question: { label: 'Question', accent: '#d97706' }
 };
+
+const FONT_STACK = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+const HOVER_DELAY_MS = 450;
+const POINTER_STABILITY_PX = 4;
 
 function ResearchNode({ data, selected }) {
   const meta = TYPE_META[data.type] || TYPE_META.analysis;
-  const keywords = Array.isArray(data.keywords) ? data.keywords.slice(0, 3) : [];
   const highlights = Array.isArray(data.highlights) ? data.highlights : [];
-  const highlightCount = highlights.length;
-  const visibleHighlights = selected ? highlights.slice(0, 3) : [];
+  const keywords = Array.isArray(data.keywords) ? data.keywords.slice(0, 3) : [];
+  const zoom = useStore((state) => state.transform?.[2] ?? 1);
+  const farZoom = zoom < 0.62;
+
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const timerRef = useRef(null);
+  const pointerRef = useRef(null);
+
+  const clearPreviewTimer = () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  };
+
+  const schedulePreview = () => {
+    clearPreviewTimer();
+    timerRef.current = window.setTimeout(() => {
+      setPreviewVisible(true);
+    }, HOVER_DELAY_MS);
+  };
+
+  useEffect(() => () => clearPreviewTimer(), []);
+
+  const handlePointerEnter = (event) => {
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    setPreviewVisible(false);
+    schedulePreview();
+  };
+
+  const handlePointerMove = (event) => {
+    const previous = pointerRef.current;
+    if (!previous) {
+      pointerRef.current = { x: event.clientX, y: event.clientY };
+      return;
+    }
+
+    const moved = Math.hypot(event.clientX - previous.x, event.clientY - previous.y);
+    if (moved >= POINTER_STABILITY_PX) {
+      pointerRef.current = { x: event.clientX, y: event.clientY };
+      if (previewVisible) setPreviewVisible(false);
+      schedulePreview();
+    }
+  };
+
+  const handlePointerLeave = () => {
+    clearPreviewTimer();
+    pointerRef.current = null;
+    setPreviewVisible(false);
+  };
 
   return (
     <div
+      onPointerEnter={handlePointerEnter}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={handlePointerLeave}
       style={{
-        width: 196,
-        borderRadius: 12,
-        border: `${selected ? 3 : 1}px solid ${selected ? '#111827' : meta.accent}`,
-        background: meta.bg,
-        padding: '10px 12px',
-        boxShadow: selected ? '0 0 0 3px rgba(17, 24, 39, 0.10)' : '0 2px 8px rgba(15, 23, 42, 0.08)',
-        color: '#0f172a'
+        position: 'relative',
+        boxSizing: 'border-box',
+        width: 200,
+        height: 88,
+        borderRadius: 10,
+        border: `${selected ? 2 : 1}px solid ${selected ? '#111827' : '#cbd5e1'}`,
+        borderTop: `3px solid ${meta.accent}`,
+        background: '#ffffff',
+        padding: farZoom ? '12px 11px 9px' : '8px 11px 9px',
+        boxShadow: selected
+          ? '0 0 0 3px rgba(17, 24, 39, 0.10), 0 8px 22px rgba(15,23,42,.10)'
+          : '0 2px 8px rgba(15, 23, 42, 0.07)',
+        color: '#111827',
+        fontFamily: FONT_STACK,
+        overflow: 'visible'
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ background: meta.accent }} />
+      <Handle type="target" position={Position.Top} style={{ background: meta.accent, width: 7, height: 7, border: '1px solid #fff' }} />
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: meta.accent }}>
-          {meta.label}
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          {highlightCount ? (
-            <span title={`${highlightCount} saved highlight${highlightCount === 1 ? '' : 's'}`} style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>
-              ★ {highlightCount}
+      {!farZoom ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', minHeight: 14, gap: 8 }}>
+          <span style={{ fontSize: 10.5, lineHeight: '14px', fontWeight: 700, letterSpacing: '.035em', textTransform: 'uppercase', color: meta.accent }}>
+            {meta.label}
+          </span>
+          {highlights.length ? (
+            <span title={`${highlights.length} saved highlights`} style={{ fontSize: 11, lineHeight: '14px', fontWeight: 650, color: '#64748b' }}>
+              ★ {highlights.length}
             </span>
           ) : null}
-          {data.messageId ? (
-            <span title="Anchored to a ChatGPT message" style={{ fontSize: 11, opacity: 0.65 }}>↗ chat</span>
-          ) : null}
         </div>
-      </div>
+      ) : null}
 
       <div
         title={data.title || 'Untitled research node'}
         style={{
-          marginTop: 6,
-          fontSize: 13,
-          fontWeight: 700,
-          lineHeight: 1.35,
+          marginTop: farZoom ? 6 : 3,
+          minHeight: farZoom ? 37 : 38,
+          fontSize: 14,
+          fontWeight: 600,
+          lineHeight: '18px',
+          letterSpacing: '-0.005em',
+          color: '#111827',
           wordBreak: 'break-word',
           display: '-webkit-box',
           WebkitBoxOrient: 'vertical',
-          WebkitLineClamp: 3,
+          WebkitLineClamp: farZoom ? 2 : 2,
           overflow: 'hidden'
         }}
       >
         {data.title || 'Untitled research node'}
       </div>
 
-      {keywords.length ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 7 }}>
-          {keywords.map((keyword) => (
-            <span
-              key={keyword}
-              style={{
-                maxWidth: 110,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                border: `1px solid ${meta.accent}33`,
-                background: '#ffffffaa',
-                borderRadius: 999,
-                padding: '2px 5px',
-                fontSize: 9,
-                lineHeight: 1.2,
-                color: '#475569'
-              }}
-            >
-              {keyword}
-            </span>
-          ))}
-        </div>
-      ) : null}
-
-      {data.checkpoint ? (
+      {!farZoom ? (
         <div
           style={{
-            marginTop: 7,
-            paddingTop: 7,
-            borderTop: '1px solid rgba(148, 163, 184, 0.24)',
-            fontSize: 11,
-            lineHeight: 1.4,
-            color: '#475569'
+            marginTop: 2,
+            minHeight: 15,
+            fontSize: 11.5,
+            lineHeight: '15px',
+            color: '#64748b',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
           }}
+          title={keywords.join(' · ')}
         >
-          {data.checkpoint.length > 110 ? `${data.checkpoint.slice(0, 110)}…` : data.checkpoint}
+          {keywords.length ? keywords.join(' · ') : (highlights.length ? `${highlights.length} saved highlight${highlights.length === 1 ? '' : 's'}` : ' ')}
+        </div>
+      ) : highlights.length ? (
+        <div style={{ position: 'absolute', right: 10, bottom: 7, fontSize: 10.5, color: '#64748b', fontWeight: 650 }}>
+          ★ {highlights.length}
         </div>
       ) : null}
 
-      {visibleHighlights.length ? (
-        <div style={{ marginTop: 8, paddingTop: 7, borderTop: '1px solid rgba(148, 163, 184, 0.28)' }}>
-          <div style={{ fontSize: 9, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>
-            Highlights {highlightCount}
+      {previewVisible && (data.checkpoint || highlights.length) ? (
+        <div
+          role="tooltip"
+          style={{
+            position: 'absolute',
+            left: 'calc(100% + 10px)',
+            top: 2,
+            width: 250,
+            pointerEvents: 'none',
+            zIndex: 80,
+            border: '1px solid #dbe3ee',
+            borderRadius: 10,
+            background: 'rgba(255,255,255,.98)',
+            boxShadow: '0 12px 30px rgba(15,23,42,.16)',
+            padding: '10px 11px',
+            color: '#334155',
+            fontFamily: FONT_STACK
+          }}
+        >
+          <div style={{ fontSize: 13, lineHeight: '18px', fontWeight: 600, color: '#111827' }}>
+            {data.title || 'Untitled research node'}
           </div>
-          {visibleHighlights.map((highlight) => (
-            <div
-              key={highlight.id || highlight.quote}
-              title={highlight.quote || ''}
-              style={{
-                marginTop: 4,
-                padding: '5px 6px',
-                borderRadius: 6,
-                background: 'rgba(255,255,255,.72)',
-                fontSize: 9.5,
-                lineHeight: 1.35,
-                color: '#475569',
-                display: '-webkit-box',
-                WebkitBoxOrient: 'vertical',
-                WebkitLineClamp: 3,
-                overflow: 'hidden'
-              }}
-            >
-              ★ “{highlight.quote || ''}”
+          {data.checkpoint ? (
+            <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: '18px', color: '#475569' }}>
+              {data.checkpoint.length > 230 ? `${data.checkpoint.slice(0, 230)}…` : data.checkpoint}
             </div>
-          ))}
-          {highlightCount > visibleHighlights.length ? (
-            <div style={{ marginTop: 4, fontSize: 9, color: '#94a3b8' }}>
-              +{highlightCount - visibleHighlights.length} more
+          ) : null}
+          {highlights.length ? (
+            <div style={{ marginTop: 7, fontSize: 11.5, lineHeight: '16px', color: '#64748b', fontWeight: 600 }}>
+              ★ {highlights.length} highlight{highlights.length === 1 ? '' : 's'}
             </div>
           ) : null}
         </div>
       ) : null}
 
-      <Handle type="source" position={Position.Bottom} style={{ background: meta.accent }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: meta.accent, width: 7, height: 7, border: '1px solid #fff' }} />
     </div>
   );
 }
