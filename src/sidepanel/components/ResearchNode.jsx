@@ -37,6 +37,7 @@ function ResearchNode({ data, selected }) {
   };
 
   const schedulePreview = () => {
+    if (selected) return;
     clearPreviewTimer();
     timerRef.current = window.setTimeout(() => {
       setPreviewVisible(true);
@@ -45,6 +46,12 @@ function ResearchNode({ data, selected }) {
 
   useEffect(() => () => clearPreviewTimer(), []);
 
+  useEffect(() => {
+    if (!selected) return;
+    clearPreviewTimer();
+    setPreviewVisible(false);
+  }, [selected]);
+
   const handlePointerEnter = (event) => {
     pointerRef.current = { x: event.clientX, y: event.clientY };
     setPreviewVisible(false);
@@ -52,6 +59,7 @@ function ResearchNode({ data, selected }) {
   };
 
   const handlePointerMove = (event) => {
+    if (selected) return;
     const previous = pointerRef.current;
     if (!previous) {
       pointerRef.current = { x: event.clientX, y: event.clientY };
@@ -123,7 +131,7 @@ function ResearchNode({ data, selected }) {
           wordBreak: 'break-word',
           display: '-webkit-box',
           WebkitBoxOrient: 'vertical',
-          WebkitLineClamp: farZoom ? 2 : 2,
+          WebkitLineClamp: 2,
           overflow: 'hidden'
         }}
       >
@@ -152,7 +160,7 @@ function ResearchNode({ data, selected }) {
         </div>
       ) : null}
 
-      {previewVisible && (data.checkpoint || highlights.length) ? (
+      {!selected && previewVisible && (data.checkpoint || highlights.length) ? (
         <div
           role="tooltip"
           style={{
