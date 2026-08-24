@@ -1,15 +1,16 @@
 /**
- * Local persistence for Research Blackboard.
+ * Scoped persistence for Research Blackboard.
  *
- * v0.2 still uses chrome.storage.local, but now persists graph metadata used by
- * the automatic Graph Delta engine (applied assistant messages + focus).
+ * A conversation normally owns its local graph. When attached to a Research
+ * Project, the project graph becomes canonical and a conversation-local mirror
+ * is maintained for content-script compatibility (selection/highlight capture).
  */
-const SCHEMA_VERSION = 2;
-const KEY_PREFIX = 'researchBlackboard:';
+import {
+  conversationGraphKey,
+  resolveResearchScope
+} from '../../shared/researchScope';
 
-function keyForConversation(conversationId) {
-  return `${KEY_PREFIX}${conversationId}`;
-}
+const SCHEMA_VERSION = 2;
 
 function emptyGraph() {
   return {
@@ -24,31 +25,39 @@ function emptyGraph() {
   };
 }
 
+function normalizeStored(stored) {
+  if (!stored || !Array.isArray(stored.nodes) || !Array.isArray(stored.edges)) return emptyGraph();
+  return {
+    schemaVersion: stored.schemaVersion || 1,
+    projectId: stored.projectId || null,
+    nodes: stored.nodes,
+    edges: stored.edges,
+    metadata: {
+      appliedDeltaMessageIds: Array.isArray(stored.metadata?.appliedDeltaMessageIds)
+        ? stored.metadata.appliedDeltaMessageIds
+        : [],
+      focusNodeId: stored.metadata?.focusNodeId || null,
+      lastDeltaAt: stored.metadata?.lastDeltaAt || null,
+      ...(stored.metadata || {})
+    }
+  };
+}
+
 export async function loadResearchGraph(conversationId) {
   if (!conversationId) return emptyGraph();
 
   try {
-    const key = keyForConversation(conversationId);
-    const result = await chrome.storage.local.get([key]);
-    const stored = result?.[key];
-
-    if (!stored || !Array.isArray(stored.nodes) || !Array.isArray(stored.edges)) {
-      return emptyGraph();
-    }
-
-    return {
-      schemaVersion: stored.schemaVersion || 1,
-      nodes: stored.nodes,
-      edges: stored.edges,
-      metadata: {
-        appliedDeltaMessageIds: Array.isArray(stored.metadata?.appliedDeltaMessageIds)
-          ? stored.metadata.appliedDeltaMessageIds
-          : [],
-        focusNodeId: stored.metadata?.focusNodeId || null,
-        lastDeltaAt: stored.metadata?.lastDeltaAt || null,
-        ...(stored.metadata || {})
-      }
+    const scope = await resolveResearchScope(conversationId);
+    const result = await chrome.storage.local.get([scope.graphKey]);
+    const stored = result?.[scope.graphKey];
+    const normalized = normalizeStored(stored);
+    normalized.projectId = scope.projectId || normalized.projectId || null;
+    normalized.metadata = {
+      ...(normalized.metadata || {}),
+      researchScope: scope.type,
+      projectId: scope.projectId || null
     };
+    return normalized;
   } catch (error) {
     console.warn('[ResearchBlackboard] load failed:', error?.message);
     return emptyGraph();
@@ -57,40 +66,69 @@ export async function loadResearchGraph(conversationId) {
 
 /**
  * Save graph state while preserving metadata written by the Graph Delta engine.
- * Existing callers may omit metadataPatch safely.
+ * In project mode, the project graph is canonical and the active conversation
+ * receives an exact mirror so DOM content scripts can keep using the legacy key.
  */
 export async function saveResearchGraph(conversationId, nodes, edges, metadataPatch = {}) {
   if (!conversationId) return;
 
-  const key = keyForConversation(conversationId);
+  const scope = await resolveResearchScope(conversationId);
   let existingMetadata = {};
 
   try {
-    const result = await chrome.storage.local.get([key]);
-    existingMetadata = result?.[key]?.metadata || {};
+    const result = await chrome.storage.local.get([scope.graphKey]);
+    existingMetadata = result?.[scope.graphKey]?.metadata || {};
   } catch {
     // Preserve normal save behavior even if the read fails.
   }
 
-  await chrome.storage.local.set({
-    [key]: {
-      schemaVersion: SCHEMA_VERSION,
+  const now = Date.now();
+  const payload = {
+    schemaVersion: SCHEMA_VERSION,
+    conversationId: scope.type === 'conversation' ? conversationId : null,
+    projectId: scope.projectId || null,
+    nodes,
+    edges,
+    metadata: {
+      appliedDeltaMessageIds: [],
+      focusNodeId: null,
+      lastDeltaAt: null,
+      ...existingMetadata,
+      ...metadataPatch,
+      researchScope: scope.type,
+      projectId: scope.projectId || null
+    },
+    updatedAt: now
+  };
+
+  const writes = { [scope.graphKey]: payload };
+  if (scope.type === 'project') {
+    writes[conversationGraphKey(conversationId)] = {
+      ...payload,
       conversationId,
-      nodes,
-      edges,
       metadata: {
-        appliedDeltaMessageIds: [],
-        focusNodeId: null,
-        lastDeltaAt: null,
-        ...existingMetadata,
-        ...metadataPatch
-      },
-      updatedAt: Date.now()
-    }
-  });
+        ...(payload.metadata || {}),
+        projectMirrorOf: scope.projectId,
+        projectMirrorAt: now
+      }
+    };
+  }
+
+  await chrome.storage.local.set(writes);
 }
 
 export async function clearResearchGraph(conversationId) {
   if (!conversationId) return;
-  await chrome.storage.local.remove(keyForConversation(conversationId));
+  const scope = await resolveResearchScope(conversationId);
+  if (scope.type === 'project') {
+    // Clearing while attached clears the canonical project graph as expected,
+    // but keeps project membership intact.
+    await saveResearchGraph(conversationId, [], [], {
+      focusNodeId: null,
+      selectedNodeId: null,
+      lastDeltaAt: Date.now()
+    });
+    return;
+  }
+  await chrome.storage.local.remove(conversationGraphKey(conversationId));
 }
