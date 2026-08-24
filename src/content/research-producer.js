@@ -1,5 +1,5 @@
 const VIEW_MODE_KEY = 'sidepanelViewMode';
-const AUTO_GRAPH_KEY = 'researchAutoGraphEnabled';
+const AUTO_GRAPH_PREFIX = 'researchAutoGraphEnabled:';
 const GRAPH_PREFIX = 'researchBlackboard:';
 const BOOTSTRAP_PREFIX = 'researchProducerBootstrapped:';
 const REQUEST_MARKER = 'RBREQ';
@@ -20,6 +20,10 @@ function sanitizeComment(value) {
 function getConversationId() {
   const match = window.location.pathname.match(/\/c\/([a-zA-Z0-9-]+)/);
   return match?.[1] || null;
+}
+
+function autoGraphKey(conversationId) {
+  return `${AUTO_GRAPH_PREFIX}${conversationId || 'new'}`;
 }
 
 function manualSemanticId(nodeId) {
@@ -82,8 +86,9 @@ async function refreshContext() {
   try {
     const conversationId = getConversationId();
     cachedConversationId = conversationId;
+    const autoKey = autoGraphKey(conversationId);
 
-    const keys = [VIEW_MODE_KEY, AUTO_GRAPH_KEY];
+    const keys = [VIEW_MODE_KEY, autoKey];
     if (conversationId) {
       keys.push(`${GRAPH_PREFIX}${conversationId}`);
       keys.push(`${BOOTSTRAP_PREFIX}${conversationId}`);
@@ -92,7 +97,7 @@ async function refreshContext() {
     }
 
     const result = await chrome.storage.local.get(keys);
-    enabled = result?.[VIEW_MODE_KEY] === 'research' && result?.[AUTO_GRAPH_KEY] === true;
+    enabled = result?.[VIEW_MODE_KEY] === 'research' && result?.[autoKey] === true;
     if (!enabled) {
       cachedSuffix = '';
       return;
@@ -226,8 +231,11 @@ function setupContextRefresh() {
     if (area !== 'local') return;
     if (
       changes[VIEW_MODE_KEY]
-      || changes[AUTO_GRAPH_KEY]
-      || Object.keys(changes).some((key) => key.startsWith(GRAPH_PREFIX) || key.startsWith(BOOTSTRAP_PREFIX))
+      || Object.keys(changes).some((key) => (
+        key.startsWith(AUTO_GRAPH_PREFIX)
+        || key.startsWith(GRAPH_PREFIX)
+        || key.startsWith(BOOTSTRAP_PREFIX)
+      ))
     ) {
       void refreshContext();
     }
