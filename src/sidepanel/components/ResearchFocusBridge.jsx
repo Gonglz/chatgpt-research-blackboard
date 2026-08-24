@@ -172,49 +172,38 @@ function applyNodeRoles(sets) {
   });
 }
 
-function ensureToggleButton(onToggle) {
-  let button = document.getElementById(BUTTON_ID);
-  if (button) return button;
-
-  button = document.createElement('button');
-  button.id = BUTTON_ID;
-  button.type = 'button';
-  button.addEventListener('click', onToggle);
-  Object.assign(button.style, {
-    position: 'fixed',
-    zIndex: '39',
-    width: '30px',
-    height: '30px',
-    borderRadius: '8px',
-    border: '1px solid #dbe3ee',
-    background: 'rgba(255,255,255,.94)',
-    color: '#475569',
-    boxShadow: '0 4px 12px rgba(15,23,42,.08)',
-    font: '700 14px/28px ui-sans-serif, system-ui, sans-serif',
-    textAlign: 'center',
-    padding: '0',
-    cursor: 'pointer',
-    backdropFilter: 'blur(8px)'
-  });
-  document.body.appendChild(button);
-  return button;
+function researchTools() {
+  return document.querySelector('[aria-label="Research canvas tools"]');
 }
 
-function positionToggle(button, visible) {
-  if (!visible) {
-    button.style.display = 'none';
-    return;
+function ensureToggleButton(onToggle) {
+  const tools = researchTools();
+  if (!tools) return null;
+
+  let button = document.getElementById(BUTTON_ID);
+  if (!button) {
+    button = document.createElement('button');
+    button.id = BUTTON_ID;
+    button.type = 'button';
+    button.addEventListener('click', onToggle);
+    Object.assign(button.style, {
+      width: '32px',
+      height: '32px',
+      flex: '0 0 32px',
+      borderRadius: '8px',
+      border: '1px solid transparent',
+      background: 'rgba(255,255,255,.92)',
+      color: '#475569',
+      boxShadow: 'none',
+      font: '700 15px/30px ui-sans-serif, system-ui, sans-serif',
+      textAlign: 'center',
+      padding: '0',
+      cursor: 'pointer'
+    });
   }
-  const tools = document.querySelector('[aria-label="Research canvas tools"]');
-  const canvas = tools?.parentElement;
-  const rect = canvas?.getBoundingClientRect?.();
-  if (!rect) {
-    button.style.display = 'none';
-    return;
-  }
-  button.style.display = 'block';
-  button.style.top = `${Math.max(8, rect.top + 10)}px`;
-  button.style.right = `${Math.max(10, window.innerWidth - rect.right + 10)}px`;
+
+  if (button.parentElement !== tools) tools.appendChild(button);
+  return button;
 }
 
 export default function ResearchFocusBridge() {
@@ -234,15 +223,18 @@ export default function ResearchFocusBridge() {
       try { await chrome.storage.local.set({ [PREF_KEY]: enabledRef.current }); } catch { /* ignore */ }
       schedule();
     };
-    const button = ensureToggleButton(toggle);
 
     const updateButton = () => {
-      const researchVisible = !!document.querySelector('[aria-label="Research canvas tools"]');
-      positionToggle(button, researchVisible);
+      const button = ensureToggleButton(toggle);
+      if (!button) return;
       const nextText = enabledRef.current ? '◎' : '○';
       if (button.textContent !== nextText) button.textContent = nextText;
+      button.style.display = 'grid';
+      button.style.placeItems = 'center';
       button.style.color = enabledRef.current ? '#2563eb' : '#94a3b8';
-      button.style.opacity = focusPresentRef.current || !enabledRef.current ? '1' : '.62';
+      button.style.borderColor = enabledRef.current ? 'rgba(37,99,235,.22)' : 'transparent';
+      button.style.background = enabledRef.current ? '#eff6ff' : 'rgba(255,255,255,.92)';
+      button.style.opacity = focusPresentRef.current || !enabledRef.current ? '1' : '.68';
       button.title = enabledRef.current
         ? (focusPresentRef.current ? 'Focus emphasis on — click to disable' : 'Focus emphasis on — no active focus yet')
         : 'Focus emphasis off — click to enable';
@@ -276,7 +268,7 @@ export default function ResearchFocusBridge() {
       const focusNodeId = graph?.metadata?.focusNodeId || graph?.focusNodeId || null;
       const sets = focusSets(graph, focusNodeId);
       focusPresentRef.current = !!sets;
-      if (sets && document.querySelector('[aria-label="Research canvas tools"]')) applyNodeRoles(sets);
+      if (sets && researchTools()) applyNodeRoles(sets);
       updateButton();
     };
 
@@ -298,7 +290,15 @@ export default function ResearchFocusBridge() {
     };
 
     chrome.storage.onChanged.addListener(onStorageChanged);
-    observer = new MutationObserver(schedule);
+    observer = new MutationObserver((mutations) => {
+      const relevant = mutations.some((mutation) => Array.from(mutation.addedNodes || []).some((node) => (
+        node instanceof Element
+        && !node.closest?.(`#${BUTTON_ID}`)
+        && (node.matches?.('.react-flow__node, .react-flow__edge, [aria-label="Research canvas tools"]')
+          || node.querySelector?.('.react-flow__node, .react-flow__edge, [aria-label="Research canvas tools"]'))
+      )));
+      if (relevant) schedule();
+    });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     window.addEventListener('resize', schedule);
     interval = window.setInterval(schedule, 1400);
