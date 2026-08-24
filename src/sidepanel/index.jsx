@@ -5,6 +5,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import AutoGraphDeltaBridge from './components/AutoGraphDeltaBridge';
+import DomGraphDeltaBridge from './components/DomGraphDeltaBridge';
 import ResearchConversationSyncBridge from './components/ResearchConversationSyncBridge';
 import SidecarPresenceBridge from './components/SidecarPresenceBridge';
 import { STORAGE_KEYS } from '../shared/constants';
@@ -65,6 +66,8 @@ function renderApp() {
     <React.StrictMode>
       <SidecarPresenceBridge />
       <ResearchConversationSyncBridge />
+      <DomGraphDeltaBridge />
+      {/* Legacy reader for existing v2 HTML-comment RGΔ stored in conversation data. */}
       <AutoGraphDeltaBridge />
       <App key={`research-revision-${researchRenderRevision}`} />
     </React.StrictMode>
