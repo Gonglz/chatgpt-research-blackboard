@@ -24,6 +24,42 @@ function cleanAnchorText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function buildMessageAnchor(conversationData, input) {
+  const supplied = input && typeof input === 'object'
+    ? input
+    : { messageId: input };
+  const messageId = supplied?.messageId || null;
+  if (!messageId) return null;
+
+  const ordered = (Array.isArray(conversationData?.nodes) ? conversationData.nodes : [])
+    .filter((node) => node?.id && cleanAnchorText(node?.content))
+    .slice()
+    .sort((a, b) => (a.createTime || 0) - (b.createTime || 0));
+
+  const messageIndex = ordered.findIndex((node) => node.id === messageId);
+  const sourceNode = messageIndex >= 0 ? ordered[messageIndex] : null;
+  const fullText = cleanAnchorText(supplied.fullText || sourceNode?.content || '');
+  const role = cleanAnchorText(supplied.role || sourceNode?.role || '').toLowerCase() || null;
+
+  let roleIndex = Number.isInteger(supplied.roleIndex) ? supplied.roleIndex : -1;
+  if (roleIndex < 0 && sourceNode && role) {
+    roleIndex = ordered
+      .slice(0, messageIndex + 1)
+      .filter((node) => cleanAnchorText(node?.role).toLowerCase() === role)
+      .length - 1;
+  }
+
+  return {
+    messageId,
+    role,
+    preview: cleanAnchorText(supplied.preview || fullText.slice(0, 220)),
+    tail: cleanAnchorText(supplied.tail || fullText.slice(-180)),
+    textLength: Number.isFinite(supplied.textLength) ? supplied.textLength : fullText.length,
+    messageIndex: Number.isInteger(supplied.messageIndex) ? supplied.messageIndex : messageIndex,
+    roleIndex
+  };
+}
+
 async function fallbackJumpToMessage(anchor) {
   if (!anchor?.messageId && !anchor?.preview) return false;
 
@@ -46,14 +82,22 @@ async function fallbackJumpToMessage(anchor) {
         const messageId = payload?.messageId || '';
         const expectedRole = normalize(payload?.role).toLowerCase();
         const preview = normalize(payload?.preview);
+        const tail = normalize(payload?.tail);
+        const expectedLength = Number(payload?.textLength) || 0;
+        const expectedMessageIndex = Number.isInteger(payload?.messageIndex) ? payload.messageIndex : -1;
+        const expectedRoleIndex = Number.isInteger(payload?.roleIndex) ? payload.roleIndex : -1;
 
         const findContainer = (node) => {
           if (!node) return null;
-          if (node.matches?.('section[data-turn-id], article')) return node;
-          return node.closest?.('section[data-turn-id], article') || node;
+          const section = node.matches?.('section[data-turn-id]')
+            ? node
+            : node.closest?.('section[data-turn-id]');
+          if (section) return section;
+          if (node.matches?.('article')) return node;
+          return node.closest?.('article') || node;
         };
 
-        const highlightAndScroll = (element, method) => {
+        const highlightAndScroll = (element, method, score = null) => {
           const target = findContainer(element);
           if (!target) return { success: false, method };
 
@@ -66,7 +110,7 @@ async function fallbackJumpToMessage(anchor) {
             target.style.outline = previousOutline;
             target.style.outlineOffset = previousOutlineOffset;
           }, 1400);
-          return { success: true, method };
+          return { success: true, method, score };
         };
 
         if (messageId) {
@@ -80,39 +124,99 @@ async function fallbackJumpToMessage(anchor) {
 
         if (!preview) return { success: false, method: 'no-preview' };
 
-        const needle = preview.slice(0, 160);
-        const shortNeedle = needle.slice(0, Math.min(80, needle.length));
-        const containers = Array.from(document.querySelectorAll('section[data-turn-id], article'));
-        let best = null;
-        let bestScore = 0;
+        // section/article selectors can describe the same turn. Canonicalize and dedupe
+        // before assigning positional indexes, otherwise two DOM wrappers for one turn
+        // can make fallback navigation oscillate between neighboring messages.
+        const rawContainers = Array.from(document.querySelectorAll('section[data-turn-id], article'));
+        const containers = [];
+        const seen = new Set();
+        for (const raw of rawContainers) {
+          const canonical = findContainer(raw);
+          if (!canonical || seen.has(canonical)) continue;
+          seen.add(canonical);
+          containers.push(canonical);
+        }
 
-        for (const container of containers) {
+        const candidates = [];
+        const roleCounters = new Map();
+        const startNeedle = preview.slice(0, Math.min(180, preview.length));
+        const shortNeedle = startNeedle.slice(0, Math.min(84, startNeedle.length));
+        const tailNeedle = tail.slice(-Math.min(140, tail.length));
+
+        containers.forEach((container, index) => {
           const roleNode = container.matches?.('[data-message-author-role]')
             ? container
             : container.querySelector?.('[data-message-author-role]');
           const candidateRole = normalize(roleNode?.getAttribute?.('data-message-author-role')).toLowerCase();
+          const currentRoleIndex = roleCounters.get(candidateRole) || 0;
+          roleCounters.set(candidateRole, currentRoleIndex + 1);
 
-          if (expectedRole && candidateRole && expectedRole !== candidateRole) continue;
+          if (expectedRole && candidateRole && expectedRole !== candidateRole) return;
 
           const text = normalize(container.innerText || container.textContent || '');
-          if (!text) continue;
+          if (!text) return;
 
           let score = 0;
-          if (text.includes(needle)) score = 4;
-          else if (shortNeedle.length >= 24 && text.includes(shortNeedle)) score = 3;
-          else {
-            const candidatePrefix = text.slice(0, 80);
-            if (candidatePrefix.length >= 24 && needle.includes(candidatePrefix)) score = 2;
+          let fingerprintHits = 0;
+
+          if (expectedRole && candidateRole === expectedRole) score += 4;
+
+          if (startNeedle.length >= 24 && text.includes(startNeedle)) {
+            score += 14;
+            fingerprintHits += 1;
+          } else if (shortNeedle.length >= 24 && text.includes(shortNeedle)) {
+            score += 9;
+            fingerprintHits += 1;
           }
 
-          if (score > bestScore) {
-            best = container;
-            bestScore = score;
+          if (tailNeedle.length >= 24 && text.includes(tailNeedle)) {
+            score += 12;
+            fingerprintHits += 1;
           }
+
+          if (expectedLength > 0) {
+            const ratio = Math.abs(text.length - expectedLength) / Math.max(expectedLength, 1);
+            if (ratio <= 0.08) score += 5;
+            else if (ratio <= 0.20) score += 3;
+            else if (ratio <= 0.40) score += 1;
+          }
+
+          if (expectedRoleIndex >= 0 && candidateRole === expectedRole) {
+            const distance = Math.abs(currentRoleIndex - expectedRoleIndex);
+            if (distance === 0) score += 7;
+            else if (distance === 1) score += 2;
+          }
+
+          if (expectedMessageIndex >= 0) {
+            const distance = Math.abs(index - expectedMessageIndex);
+            if (distance === 0) score += 4;
+            else if (distance === 1) score += 1;
+          }
+
+          candidates.push({ container, score, fingerprintHits, index, roleIndex: currentRoleIndex });
+        });
+
+        candidates.sort((a, b) => b.score - a.score);
+        const best = candidates[0];
+        const second = candidates[1];
+
+        if (!best || best.score < 10) {
+          return { success: false, method: 'not-found', bestScore: best?.score || 0 };
         }
 
-        if (best) return highlightAndScroll(best, 'text-role-fallback');
-        return { success: false, method: 'not-found' };
+        // If two candidates are effectively tied and we only matched a weak prefix,
+        // fail closed instead of jumping to the wrong neighboring turn.
+        const margin = best.score - (second?.score || 0);
+        if (second && margin < 3 && best.fingerprintHits < 2) {
+          return {
+            success: false,
+            method: 'ambiguous',
+            bestScore: best.score,
+            secondScore: second.score
+          };
+        }
+
+        return highlightAndScroll(best.container, 'fingerprint-fallback', best.score);
       }
     });
 
@@ -266,19 +370,12 @@ function App() {
     window.__conversationData = conversationData;
   }, [tree, printTree, treeStats, conversationData]);
 
-  const jumpToMessage = useCallback((messageId) => {
-    if (!messageId) return;
+  const jumpToMessage = useCallback((input) => {
+    const anchor = buildMessageAnchor(conversationData, input);
+    if (!anchor?.messageId) return;
 
-    const sourceNode = Array.isArray(conversationData?.nodes)
-      ? conversationData.nodes.find((node) => node?.id === messageId)
-      : null;
-    const anchor = {
-      messageId,
-      role: sourceNode?.role || null,
-      preview: cleanAnchorText(sourceNode?.content || '').slice(0, 180)
-    };
-
-    console.log('[SidePanel] Sending SCROLL_TO_MESSAGE for:', messageId);
+    const { messageId } = anchor;
+    console.log('[SidePanel] Sending SCROLL_TO_MESSAGE for:', messageId, anchor);
 
     const runFallback = () => {
       if (!anchor.preview) return;
@@ -299,7 +396,8 @@ function App() {
       console.log('[SidePanel] sendMessage response:', response);
 
       // Background wraps the content-script response as { success: true, data: ... }.
-      // Trigger the semantic fallback when the content script explicitly reports failure.
+      // Trigger the stronger fingerprint fallback only after the normal navigator
+      // explicitly fails; exact-ID navigation remains the preferred path.
       if (response?.success === false || response?.data?.success === false) {
         runFallback();
       }
