@@ -65,11 +65,11 @@ const builds = [
     entryPoints: ['src/content/research-producer.js'],
     outfile: 'dist/research-producer.js'
   },
-  // Lightweight selection toolbar for saving answer excerpts as Highlights or
-  // promoting them into semantic Research nodes.
+  // Selection v2 captures the Range immediately on mouseup, before ChatGPT's
+  // native selection UI can collapse or replace window.getSelection().
   {
     ...commonOptions,
-    entryPoints: ['src/content/research-selection.js'],
+    entryPoints: ['src/content/research-selection-v2.js'],
     outfile: 'dist/research-selection.js'
   },
   {
