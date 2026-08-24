@@ -80,6 +80,73 @@ function semanticKey(node) {
   return semanticId ? `semantic:${semanticId}` : null;
 }
 
+function hasConversationSource(node, conversationId) {
+  return (node?.data?.sources || []).some((source) => source?.conversationId === conversationId)
+    || (node?.data?.highlights || []).some((highlight) => highlight?.conversationId === conversationId);
+}
+
+/**
+ * Extract only the material for which this conversation has provenance.
+ * Used when moving a chat between projects so the old project's unrelated graph
+ * is never carried into the new project via the conversation mirror.
+ */
+function extractConversationSubgraph(graph, conversationId) {
+  if (!graph || !conversationId) {
+    return { schemaVersion: 2, nodes: [], edges: [], metadata: {} };
+  }
+
+  const selectedNodes = (graph.nodes || [])
+    .filter((node) => hasConversationSource(node, conversationId))
+    .map((node) => ({
+      ...node,
+      data: {
+        ...(node.data || {}),
+        sources: (node.data?.sources || []).filter((source) => source?.conversationId === conversationId),
+        highlights: (node.data?.highlights || []).filter((highlight) => (
+          highlight?.conversationId === conversationId
+          || (!highlight?.conversationId && (node.data?.sources || []).some((source) => source?.conversationId === conversationId && source?.messageId === highlight?.messageId))
+        ))
+      }
+    }));
+
+  const nodeIds = new Set(selectedNodes.map((node) => node.id));
+  const selectedEdges = (graph.edges || [])
+    .filter((edge) => {
+      if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return false;
+      const sources = edge?.data?.sources || [];
+      if (!sources.length) return true; // legacy edge between two proven local nodes
+      return sources.some((source) => source?.conversationId === conversationId);
+    })
+    .map((edge) => ({
+      ...edge,
+      data: {
+        ...(edge.data || {}),
+        sources: (edge.data?.sources || []).filter((source) => source?.conversationId === conversationId)
+      }
+    }));
+
+  const focusNodeId = nodeIds.has(graph.metadata?.focusNodeId) ? graph.metadata.focusNodeId : null;
+  const selectedNodeId = nodeIds.has(graph.metadata?.selectedNodeId) ? graph.metadata.selectedNodeId : null;
+
+  return {
+    schemaVersion: Math.max(2, Number(graph.schemaVersion) || 2),
+    conversationId,
+    projectId: null,
+    nodes: selectedNodes,
+    edges: selectedEdges,
+    metadata: {
+      focusNodeId,
+      selectedNodeId,
+      appliedDeltaMessageIds: [],
+      appliedDomDeltaKeys: [],
+      deltaRevision: 0,
+      extractedFromProjectId: graph.projectId || graph.metadata?.projectId || null,
+      extractedAt: Date.now()
+    },
+    updatedAt: Date.now()
+  };
+}
+
 function mergeGraphs(projectGraph, incomingGraph, conversationId) {
   const base = decorateGraphWithConversation(projectGraph || { nodes: [], edges: [], metadata: {} }, null);
   const incoming = decorateGraphWithConversation(incomingGraph || { nodes: [], edges: [], metadata: {} }, conversationId);
@@ -199,17 +266,46 @@ async function upsertProjectIndex(projectId) {
   await chrome.storage.local.set({ [PROJECT_INDEX_KEY]: ids });
 }
 
+async function incomingGraphForConversation(conversationId) {
+  const scope = await resolveResearchScope(conversationId);
+  if (scope.type === 'project' && scope.projectId) {
+    const key = projectGraphKey(scope.projectId);
+    const record = await chrome.storage.local.get([key]);
+    return {
+      graph: extractConversationSubgraph(record?.[key], conversationId),
+      oldProjectId: scope.projectId
+    };
+  }
+  const key = conversationGraphKey(conversationId);
+  const record = await chrome.storage.local.get([key]);
+  return {
+    graph: record?.[key] || { schemaVersion: 2, nodes: [], edges: [], metadata: {} },
+    oldProjectId: null
+  };
+}
+
+async function removeConversationFromProjectMeta(projectId, conversationId) {
+  if (!projectId) return;
+  const key = projectMetaKey(projectId);
+  const record = await chrome.storage.local.get([key]);
+  const meta = record?.[key];
+  if (!meta) return;
+  await chrome.storage.local.set({
+    [key]: {
+      ...meta,
+      conversations: (meta.conversations || []).filter((item) => item.conversationId !== conversationId),
+      updatedAt: Date.now()
+    }
+  });
+}
+
 export async function createResearchProject(title, conversationId, conversationTitle = '') {
   const projectId = makeId('project');
   const now = Date.now();
-  const localKey = conversationGraphKey(conversationId);
-  const local = conversationId ? await chrome.storage.local.get([localKey]) : {};
-  const initialGraph = decorateGraphWithConversation(local?.[localKey] || {
-    schemaVersion: 2,
-    nodes: [],
-    edges: [],
-    metadata: {}
-  }, conversationId);
+  const incoming = conversationId
+    ? await incomingGraphForConversation(conversationId)
+    : { graph: { schemaVersion: 2, nodes: [], edges: [], metadata: {} }, oldProjectId: null };
+  const initialGraph = decorateGraphWithConversation(incoming.graph, conversationId);
 
   const meta = {
     id: projectId,
@@ -236,6 +332,7 @@ export async function createResearchProject(title, conversationId, conversationT
     updatedAt: now
   };
 
+  const localKey = conversationId ? conversationGraphKey(conversationId) : null;
   const writes = {
     [projectMetaKey(projectId)]: meta,
     [projectGraphKey(projectId)]: graph
@@ -254,19 +351,26 @@ export async function createResearchProject(title, conversationId, conversationT
   }
   await chrome.storage.local.set(writes);
   await upsertProjectIndex(projectId);
+  if (incoming.oldProjectId && incoming.oldProjectId !== projectId) {
+    await removeConversationFromProjectMeta(incoming.oldProjectId, conversationId);
+  }
   return meta;
 }
 
 export async function attachConversationToProject(projectId, conversationId, conversationTitle = '') {
   if (!projectId || !conversationId) return null;
+  const currentScope = await resolveResearchScope(conversationId);
+  if (currentScope.projectId === projectId) return getConversationProject(conversationId);
+
+  const incoming = await incomingGraphForConversation(conversationId);
   const metaKey = projectMetaKey(projectId);
   const pGraphKey = projectGraphKey(projectId);
   const localKey = conversationGraphKey(conversationId);
-  const records = await chrome.storage.local.get([metaKey, pGraphKey, localKey]);
+  const records = await chrome.storage.local.get([metaKey, pGraphKey]);
   const meta = records?.[metaKey];
   if (!meta) throw new Error('Research project not found.');
 
-  const merged = mergeGraphs(records?.[pGraphKey], records?.[localKey], conversationId);
+  const merged = mergeGraphs(records?.[pGraphKey], incoming.graph, conversationId);
   const conversations = Array.isArray(meta.conversations) ? [...meta.conversations] : [];
   const existingIndex = conversations.findIndex((item) => item.conversationId === conversationId);
   const entry = {
@@ -300,6 +404,10 @@ export async function attachConversationToProject(projectId, conversationId, con
       }
     }
   });
+
+  if (incoming.oldProjectId && incoming.oldProjectId !== projectId) {
+    await removeConversationFromProjectMeta(incoming.oldProjectId, conversationId);
+  }
   return nextMeta;
 }
 
@@ -314,13 +422,14 @@ export async function detachConversationFromProject(conversationId) {
   const records = await chrome.storage.local.get([metaKey, pGraphKey]);
   const projectGraph = records?.[pGraphKey] || { schemaVersion: 2, nodes: [], edges: [], metadata: {} };
   const meta = records?.[metaKey] || null;
+  const extracted = extractConversationSubgraph(projectGraph, conversationId);
 
   const localSnapshot = {
-    ...projectGraph,
+    ...extracted,
     projectId: null,
     conversationId,
     metadata: {
-      ...(projectGraph.metadata || {}),
+      ...(extracted.metadata || {}),
       projectId: null,
       projectMirrorOf: null,
       detachedFromProjectId: scope.projectId,
@@ -342,4 +451,4 @@ export async function detachConversationFromProject(conversationId) {
   return meta;
 }
 
-export { decorateGraphWithConversation, mergeGraphs };
+export { decorateGraphWithConversation, extractConversationSubgraph, mergeGraphs };
