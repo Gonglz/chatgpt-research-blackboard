@@ -1,6 +1,7 @@
+import { loadScopedGraphRecord, writeScopedGraphRecord } from '../shared/researchScope';
+
 const AUTO_PREFIX = 'researchAutoGraphEnabled:';
 const HEARTBEAT_PREFIX = 'researchSidecarHeartbeat:';
-const GRAPH_PREFIX = 'researchBlackboard:';
 const HEARTBEAT_TTL_MS = 4500;
 const TOOLBAR_ID = 'research-blackboard-selection-toolbar';
 
@@ -21,12 +22,7 @@ function makeId(prefix) {
 }
 
 function getConversationId() {
-  const match = window.location.pathname.match(/\/c\/([a-zA-Z0-9-]+)/);
-  return match?.[1] || null;
-}
-
-function graphKey(conversationId) {
-  return `${GRAPH_PREFIX}${conversationId}`;
+  return window.location.pathname.match(/\/c\/([a-zA-Z0-9-]+)/)?.[1] || null;
 }
 
 function heartbeatFresh(value) {
@@ -179,18 +175,10 @@ function captureSelection() {
   };
 }
 
-function semanticIdOf(node) {
-  if (node?.data?.semanticId) return cleanText(node.data.semanticId);
-  if (String(node?.id || '').startsWith('rg_')) return String(node.id).slice(3);
-  return null;
-}
-
 function cjkBigrams(value) {
   const text = cleanText(value).replace(/[\s，。！？；、：:（）()《》“”"'`~!@#$%^&*+=\[\]{}<>/\\|_-]+/g, '');
   const grams = new Set();
-  for (let i = 0; i < text.length - 1; i++) {
-    grams.add(text.slice(i, i + 2));
-  }
+  for (let i = 0; i < text.length - 1; i++) grams.add(text.slice(i, i + 2));
   return grams;
 }
 
@@ -231,11 +219,7 @@ function scoreNodeForSelection(node, payload, focusId) {
   }
 
   const title = cleanText(node?.data?.title);
-  if (title && payload.localHeading && (title.includes(payload.localHeading) || payload.localHeading.includes(title))) {
-    score += 10;
-  }
-
-  // Focus is only a tie-breaker. Location/context must dominate ownership.
+  if (title && payload.localHeading && (title.includes(payload.localHeading) || payload.localHeading.includes(title))) score += 10;
   if (focusId && node.id === focusId) score += 1.5;
   return score;
 }
@@ -247,30 +231,27 @@ function resolveTargetNode(graph, selectionPayload) {
   const sameMessage = nodes.filter((node) => (
     node?.data?.messageId === selectionPayload.messageId
     || (Array.isArray(node?.data?.sourceMessageIds) && node.data.sourceMessageIds.includes(selectionPayload.messageId))
+    || (Array.isArray(node?.data?.sources) && node.data.sources.some((source) => (
+      source?.conversationId === selectionPayload.conversationId && source?.messageId === selectionPayload.messageId
+    )))
   ));
 
   if (sameMessage.length === 1) return sameMessage[0];
-
   if (sameMessage.length > 1) {
     const focusId = graph?.metadata?.focusNodeId || null;
-    const ranked = sameMessage
+    return sameMessage
       .map((node) => ({ node, score: scoreNodeForSelection(node, selectionPayload, focusId) }))
-      .sort((a, b) => b.score - a.score);
-    return ranked[0]?.node || null;
+      .sort((a, b) => b.score - a.score)[0]?.node || null;
   }
 
   const focusId = graph?.metadata?.focusNodeId;
-  if (focusId) {
-    const focused = nodes.find((node) => node.id === focusId);
-    if (focused) return focused;
-  }
-
-  return null;
+  return focusId ? nodes.find((node) => node.id === focusId) || null : null;
 }
 
 function makeHighlight(payload) {
   return {
     id: makeId('highlight'),
+    conversationId: payload.conversationId || null,
     quote: payload.quote,
     messageId: payload.messageId || null,
     messageRole: payload.messageRole || 'assistant',
@@ -287,11 +268,24 @@ function makeHighlight(payload) {
   };
 }
 
+function appendNodeSource(list, payload) {
+  const source = {
+    conversationId: payload.conversationId || null,
+    messageId: payload.messageId || null,
+    role: payload.messageRole || 'assistant',
+    preview: payload.messagePreview || '',
+    addedAt: Date.now()
+  };
+  const items = Array.isArray(list) ? [...list] : [];
+  const duplicate = items.some((item) => item?.conversationId === source.conversationId && item?.messageId === source.messageId);
+  if (!duplicate) items.push(source);
+  return items.slice(-40);
+}
+
 function inferSelectionTitle(quote) {
   let text = cleanText(quote)
     .replace(/^[“”"'‘’「」『』【】\s]+|[“”"'‘’「」『』【】\s]+$/g, '')
     .replace(/^(所以|因此|但是|不过|其实|也就是说|换句话说)[，,:：\s]*/, '');
-
   const firstClause = text.split(/[。！？?!；;\n]/).map(cleanText).find(Boolean) || text;
   text = firstClause || 'Selection node';
   return text.length > 34 ? `${text.slice(0, 34)}…` : text;
@@ -308,29 +302,18 @@ function nodePosition(graph, parentNode) {
       y: parentNode.position.y + 150 + Math.min(ring - 1, 3) * 35
     };
   }
-
   const index = nodes.length;
-  return {
-    x: 40 + (index % 3) * 230,
-    y: 50 + Math.floor(index / 3) * 155
-  };
+  return { x: 40 + (index % 3) * 230, y: 50 + Math.floor(index / 3) * 155 };
 }
 
 async function saveHighlightToGraph(payload) {
   const conversationId = payload?.conversationId;
   if (!conversationId) return { ok: false, message: 'No conversation' };
 
-  const key = graphKey(conversationId);
-  const result = await chrome.storage.local.get([key]);
-  const graph = result?.[key];
-  if (!graph || !Array.isArray(graph.nodes)) {
-    return { ok: false, message: 'No research node yet — use + Node' };
-  }
-
+  const { graph } = await loadScopedGraphRecord(conversationId);
+  if (!graph || !Array.isArray(graph.nodes)) return { ok: false, message: 'No research node yet — use + Node' };
   const target = resolveTargetNode(graph, payload);
-  if (!target) {
-    return { ok: false, message: 'No matching node — use + Node' };
-  }
+  if (!target) return { ok: false, message: 'No matching node — use + Node' };
 
   const highlight = makeHighlight(payload);
   let inserted = false;
@@ -338,7 +321,9 @@ async function saveHighlightToGraph(payload) {
     if (node.id !== target.id) return node;
     const existing = Array.isArray(node?.data?.highlights) ? node.data.highlights : [];
     const duplicate = existing.some((item) => (
-      item?.messageId === highlight.messageId && cleanText(item?.quote) === cleanText(highlight.quote)
+      item?.conversationId === highlight.conversationId
+      && item?.messageId === highlight.messageId
+      && cleanText(item?.quote) === cleanText(highlight.quote)
     ));
     if (duplicate) return node;
     inserted = true;
@@ -346,29 +331,27 @@ async function saveHighlightToGraph(payload) {
       ...node,
       data: {
         ...node.data,
+        sources: appendNodeSource(node.data?.sources, payload),
         highlights: existing.concat(highlight)
       }
     };
   });
 
-  await chrome.storage.local.set({
-    [key]: {
-      ...graph,
-      nodes,
-      metadata: {
-        ...(graph.metadata || {}),
-        selectedNodeId: target.id,
-        lastSelectionAt: Date.now()
-      },
-      updatedAt: Date.now()
-    }
+  const now = Date.now();
+  await writeScopedGraphRecord(conversationId, {
+    ...graph,
+    nodes,
+    metadata: {
+      ...(graph.metadata || {}),
+      selectedNodeId: target.id,
+      lastSelectionAt: now
+    },
+    updatedAt: now
   });
 
   return {
     ok: true,
-    message: inserted
-      ? `Saved to ${target.data?.title || 'node'}`
-      : `Already saved in ${target.data?.title || 'node'}`
+    message: inserted ? `Saved to ${target.data?.title || 'node'}` : `Already saved in ${target.data?.title || 'node'}`
   };
 }
 
@@ -376,9 +359,8 @@ async function createNodeFromSelection(payload, nodeType = 'analysis') {
   const conversationId = payload?.conversationId;
   if (!conversationId) return { ok: false, message: 'No conversation' };
 
-  const key = graphKey(conversationId);
-  const result = await chrome.storage.local.get([key]);
-  const graph = result?.[key] || {
+  const loaded = await loadScopedGraphRecord(conversationId);
+  const graph = loaded.graph || {
     schemaVersion: 2,
     conversationId,
     nodes: [],
@@ -407,6 +389,7 @@ async function createNodeFromSelection(payload, nodeType = 'analysis') {
       messageTextLength: payload.messageTextLength || 0,
       messageIndex: -1,
       messageRoleIndex: -1,
+      sources: appendNodeSource([], payload),
       highlights: [highlight],
       createdFromSelection: true
     }
@@ -414,7 +397,6 @@ async function createNodeFromSelection(payload, nodeType = 'analysis') {
 
   const nodes = [...(graph.nodes || []), node];
   const edges = [...(graph.edges || [])];
-
   if (parent && parent.id !== id) {
     edges.push({
       id: makeId('edge'),
@@ -422,25 +404,27 @@ async function createNodeFromSelection(payload, nodeType = 'analysis') {
       target: id,
       type: 'smoothstep',
       label: 'deepens',
-      data: { relation: 'deepens', createdFromSelection: true }
+      data: {
+        relation: 'deepens',
+        createdFromSelection: true,
+        sources: [{ conversationId, messageId: payload.messageId || null, addedAt: Date.now() }]
+      }
     });
   }
 
-  await chrome.storage.local.set({
-    [key]: {
-      ...graph,
-      schemaVersion: graph.schemaVersion || 2,
-      conversationId,
-      nodes,
-      edges,
-      metadata: {
-        ...(graph.metadata || {}),
-        focusNodeId: id,
-        selectedNodeId: id,
-        lastSelectionAt: Date.now()
-      },
-      updatedAt: Date.now()
-    }
+  const now = Date.now();
+  await writeScopedGraphRecord(conversationId, {
+    ...graph,
+    schemaVersion: graph.schemaVersion || 2,
+    nodes,
+    edges,
+    metadata: {
+      ...(graph.metadata || {}),
+      focusNodeId: id,
+      selectedNodeId: id,
+      lastSelectionAt: now
+    },
+    updatedAt: now
   });
 
   return { ok: true, message: 'Created research node' };
@@ -454,13 +438,9 @@ function removeToolbar() {
 
 function buttonStyle(primary = false) {
   return [
-    'border:0',
-    'border-radius:7px',
-    'padding:6px 9px',
+    'border:0', 'border-radius:7px', 'padding:6px 9px',
     'font:600 12px/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'cursor:pointer',
-    `background:${primary ? '#2563eb' : '#ffffff'}`,
-    `color:${primary ? '#ffffff' : '#334155'}`,
+    'cursor:pointer', `background:${primary ? '#2563eb' : '#ffffff'}`, `color:${primary ? '#ffffff' : '#334155'}`,
     primary ? '' : 'box-shadow:inset 0 0 0 1px #dbe3ee'
   ].filter(Boolean).join(';');
 }
@@ -486,28 +466,12 @@ function openTypeMenu(nodeButton) {
   const menu = document.createElement('div');
   menu.dataset.rbTypeMenu = '1';
   menu.style.cssText = [
-    'position:absolute',
-    'top:calc(100% + 5px)',
-    'right:0',
-    'display:flex',
-    'flex-direction:column',
-    'gap:3px',
-    'padding:5px',
-    'min-width:112px',
-    'border:1px solid #dbe3ee',
-    'border-radius:9px',
-    'background:#fff',
-    'box-shadow:0 10px 28px rgba(15,23,42,.16)',
-    'z-index:2147483647'
+    'position:absolute', 'top:calc(100% + 5px)', 'right:0', 'display:flex', 'flex-direction:column', 'gap:3px',
+    'padding:5px', 'min-width:112px', 'border:1px solid #dbe3ee', 'border-radius:9px', 'background:#fff',
+    'box-shadow:0 10px 28px rgba(15,23,42,.16)', 'z-index:2147483647'
   ].join(';');
 
-  const options = [
-    ['analysis', 'Analysis'],
-    ['comparison', 'Comparison'],
-    ['question', 'Question']
-  ];
-
-  for (const [value, label] of options) {
+  for (const [value, label] of [['analysis', 'Analysis'], ['comparison', 'Comparison'], ['question', 'Question']]) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
@@ -547,17 +511,9 @@ async function showToolbarForSelection() {
   const root = document.createElement('div');
   root.id = TOOLBAR_ID;
   root.style.cssText = [
-    'position:fixed',
-    'display:flex',
-    'align-items:center',
-    'gap:5px',
-    'padding:5px',
-    'border:1px solid #dbe3ee',
-    'border-radius:10px',
-    'background:rgba(255,255,255,.98)',
-    'box-shadow:0 8px 26px rgba(15,23,42,.18)',
-    'z-index:2147483647',
-    'user-select:none'
+    'position:fixed', 'display:flex', 'align-items:center', 'gap:5px', 'padding:5px', 'border:1px solid #dbe3ee',
+    'border-radius:10px', 'background:rgba(255,255,255,.98)', 'box-shadow:0 8px 26px rgba(15,23,42,.18)',
+    'z-index:2147483647', 'user-select:none'
   ].join(';');
 
   const saveButton = document.createElement('button');
@@ -600,9 +556,7 @@ async function showToolbarForSelection() {
 
 function scheduleToolbar() {
   if (showTimer) window.clearTimeout(showTimer);
-  showTimer = window.setTimeout(() => {
-    void showToolbarForSelection();
-  }, 40);
+  showTimer = window.setTimeout(() => { void showToolbarForSelection(); }, 40);
 }
 
 function setupSelectionCapture() {
@@ -612,9 +566,7 @@ function setupSelectionCapture() {
   }, true);
 
   document.addEventListener('keyup', (event) => {
-    if (event.key === 'Shift' || event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') {
-      scheduleToolbar();
-    }
+    if (event.key === 'Shift' || event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') scheduleToolbar();
   }, true);
 
   document.addEventListener('pointerdown', (event) => {
