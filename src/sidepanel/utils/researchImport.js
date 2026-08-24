@@ -1,4 +1,5 @@
-const GRAPH_PREFIX = 'researchBlackboard:';
+import { resolveResearchScope, writeScopedGraphRecord } from '../../shared/researchScope';
+
 const PACKAGE_FORMAT = 'chatgpt-research-blackboard';
 const SUPPORTED_NODE_TYPES = new Set(['analysis', 'comparison', 'judgment', 'question']);
 const SUPPORTED_RELATIONS = new Set(['deepens', 'compares', 'supports', 'contradicts', 'informs']);
@@ -43,7 +44,7 @@ function validatePackage(payload) {
   return payload;
 }
 
-function normalizeGraph(graph, conversationId, sourceConversationId) {
+function normalizeGraph(graph, conversationId, sourceConversationId, scope) {
   const nodes = graph.nodes.map((node) => {
     const type = SUPPORTED_NODE_TYPES.has(node?.data?.type) ? node.data.type : 'analysis';
     const highlights = Array.isArray(node?.data?.highlights) ? node.data.highlights : [];
@@ -83,12 +84,15 @@ function normalizeGraph(graph, conversationId, sourceConversationId) {
 
   return {
     schemaVersion: Math.max(2, Number(graph.schemaVersion) || 2),
-    conversationId,
+    conversationId: scope?.type === 'project' ? null : conversationId,
+    projectId: scope?.projectId || null,
     nodes,
     edges,
     metadata: {
       ...(graph.metadata || {}),
       selectedNodeId: null,
+      researchScope: scope?.type || 'conversation',
+      projectId: scope?.projectId || null,
       importedAt: Date.now(),
       importedFromConversationId: sourceConversationId || null,
       importSourceMatchedConversation: !!sourceConversationId && sourceConversationId === conversationId
@@ -101,6 +105,7 @@ export async function importResearchPackage(file) {
   if (!file) throw new Error('Choose a .rbb.json file first.');
   const context = await activeConversationContext();
   if (!context.conversationId) throw new Error('Open a saved ChatGPT conversation before importing.');
+  const scope = await resolveResearchScope(context.conversationId);
 
   let payload;
   try {
@@ -119,23 +124,24 @@ export async function importResearchPackage(file) {
   if (sourceConversationId && sourceConversationId !== context.conversationId) {
     const ok = window.confirm(
       'This package was exported from another ChatGPT conversation.\n\n' +
-      'The graph can be imported here, but source-message jumps may not work because the original message ids belong to a different conversation.\n\n' +
+      'The graph can be imported, but source-message jumps only work where the package contains usable conversation provenance.\n\n' +
       'Import anyway?'
     );
     if (!ok) return 'Import cancelled';
   }
 
-  const key = `${GRAPH_PREFIX}${context.conversationId}`;
-  const existing = await chrome.storage.local.get([key]);
-  if (existing?.[key]?.nodes?.length) {
+  const existingRecord = scope.graphKey ? await chrome.storage.local.get([scope.graphKey]) : {};
+  const existing = scope.graphKey ? existingRecord?.[scope.graphKey] : null;
+  if (existing?.nodes?.length) {
+    const scopeName = scope.type === 'project' ? 'current Project Blackboard' : 'current Blackboard';
     const ok = window.confirm(
-      `Replace the current Blackboard (${existing[key].nodes.length} nodes) with the imported package?\n\n` +
+      `Replace the ${scopeName} (${existing.nodes.length} nodes) with the imported package?\n\n` +
       'Export a backup first if you want to keep the current graph.'
     );
     if (!ok) return 'Import cancelled';
   }
 
-  const graph = normalizeGraph(payload.graph, context.conversationId, sourceConversationId);
-  await chrome.storage.local.set({ [key]: graph });
-  return `Imported ${graph.nodes.length} nodes and ${graph.edges.length} relations`;
+  const graph = normalizeGraph(payload.graph, context.conversationId, sourceConversationId, scope);
+  await writeScopedGraphRecord(context.conversationId, graph);
+  return `Imported ${graph.nodes.length} nodes and ${graph.edges.length} relations${scope.type === 'project' ? ' into project' : ''}`;
 }
