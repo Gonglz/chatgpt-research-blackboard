@@ -7,6 +7,7 @@ import App from './App';
 import AutoGraphDeltaBridge from './components/AutoGraphDeltaBridge';
 import DomGraphDeltaBridge from './components/DomGraphDeltaBridge';
 import ResearchConversationSyncBridge from './components/ResearchConversationSyncBridge';
+import ResearchLayoutBridge from './components/ResearchLayoutBridge';
 import ResearchProjectMirrorBridge from './components/ResearchProjectMirrorBridge';
 import SidecarPresenceBridge from './components/SidecarPresenceBridge';
 import { STORAGE_KEYS } from '../shared/constants';
@@ -68,6 +69,7 @@ function renderApp() {
       <SidecarPresenceBridge />
       <ResearchConversationSyncBridge />
       <ResearchProjectMirrorBridge />
+      <ResearchLayoutBridge />
       <DomGraphDeltaBridge />
       {/* Legacy reader for existing v2 HTML-comment RGΔ stored in conversation data. */}
       <AutoGraphDeltaBridge />
@@ -76,9 +78,9 @@ function renderApp() {
   );
 }
 
-// Automatic graph updates and Selection -> Highlight/Node captures remount App.
-// Normal node dragging/editing preserves these timestamps and therefore does not
-// disturb the user's current canvas state.
+// Automatic graph updates, Selection captures and structural layout writes remount
+// App. Normal node dragging/editing does not touch these timestamps, preserving
+// the user's current canvas and Detail state.
 try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
@@ -89,8 +91,11 @@ try {
       const afterDelta = change?.newValue?.metadata?.lastDeltaAt || null;
       const beforeSelection = change?.oldValue?.metadata?.lastSelectionAt || null;
       const afterSelection = change?.newValue?.metadata?.lastSelectionAt || null;
+      const beforeLayout = change?.oldValue?.metadata?.lastLayoutAt || null;
+      const afterLayout = change?.newValue?.metadata?.lastLayoutAt || null;
       return (!!afterDelta && beforeDelta !== afterDelta)
-        || (!!afterSelection && beforeSelection !== afterSelection);
+        || (!!afterSelection && beforeSelection !== afterSelection)
+        || (!!afterLayout && beforeLayout !== afterLayout);
     });
 
     if (!researchChanged) return;
