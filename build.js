@@ -19,8 +19,6 @@ const stripDebugLogsPlugin = {
       const fs = await import('fs');
       let contents = await fs.promises.readFile(args.path, 'utf8');
 
-      // 移除 console.log, console.debug, console.info（保留 error, warn）
-      // 匹配 console.log(...) 包括多行和嵌套括号
       contents = contents.replace(/console\.(log|debug|info)\s*\([^;]*\);?/g, '');
 
       return {
@@ -45,48 +43,48 @@ const commonOptions = {
   logLevel: 'info'
 };
 
-// React 相关配置
 const reactOptions = {
   ...commonOptions,
   loader: {
     '.js': 'jsx',
     '.jsx': 'jsx'
   },
-  jsx: 'automatic',  // 使用 React 17+ 的自动 JSX 运行时
+  jsx: 'automatic',
 };
 
 const builds = [
-  // Content Script (不需要 React)
   {
     ...commonOptions,
     entryPoints: ['src/content/index.js'],
     outfile: 'dist/content.js'
   },
-  // Background Script (不需要 React)
+  // Research Blackboard producer: injects the hidden RBREQ contract only while
+  // Research view is active. Kept separate from the upstream content bundle.
+  {
+    ...commonOptions,
+    entryPoints: ['src/content/research-producer.js'],
+    outfile: 'dist/research-producer.js'
+  },
   {
     ...commonOptions,
     entryPoints: ['src/background/index.js'],
     outfile: 'dist/background.js'
   },
-  // Popup (不需要 React)
   {
     ...commonOptions,
     entryPoints: ['src/popup/popup.js'],
     outfile: 'dist/popup.js'
   },
-  // Setup Page (不需要 React)
   {
     ...commonOptions,
     entryPoints: ['src/setup/setup.js'],
     outfile: 'dist/setup.js'
   },
-  // Side Panel (使用 React)
   {
     ...reactOptions,
     entryPoints: ['src/sidepanel/index.jsx'],
     outfile: 'dist/sidepanel.js'
   },
-  // Side Panel CSS
   {
     ...commonOptions,
     entryPoints: ['src/sidepanel/styles/index.css'],
