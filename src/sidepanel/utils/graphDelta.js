@@ -46,11 +46,33 @@ function normalizeRelation(value) {
   return RELATIONS.has(raw) ? raw : 'informs';
 }
 
+function normalizeKeywords(value) {
+  if (Array.isArray(value)) {
+    return value.map(cleanText).filter(Boolean).slice(0, 6);
+  }
+  return String(value || '')
+    .split(/[|｜,，、;/；]+/)
+    .map(cleanText)
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function normalizeNodePatch(patch = {}) {
+  const next = { ...patch };
+  if (next.type) next.type = normalizeNodeType(next.type);
+  if (next.keywords !== undefined) next.keywords = normalizeKeywords(next.keywords);
+  if (next.checkpoint !== undefined) next.checkpoint = cleanText(next.checkpoint);
+  if (next.title !== undefined) next.title = cleanText(next.title);
+  if (next.status !== undefined) next.status = cleanText(next.status).toLowerCase();
+  return next;
+}
+
 /**
  * Extract RGΔ payloads from assistant text.
  * Preferred transport is an HTML comment so the protocol is invisible in ChatGPT:
  *   <!--RGΔ\n...\n-->
- * Fenced/plain forms are supported for debugging.
+ * Fenced/plain forms are supported for manual debugging only. Automatic execution
+ * uses a stricter extractor in useAutoGraphDelta and trusts hidden comments only.
  */
 export function extractGraphDeltaBlocks(content) {
   const text = String(content || '');
@@ -86,10 +108,17 @@ export function stripGraphDeltaBlocks(content) {
 }
 
 /**
- * RGΔ v0.2 grammar:
- *   focus: A1
+ * RGΔ v0.2 grammar.
+ *
+ * Backward-compatible compact form:
  *   +node A1 analysis "Business model"
- *   ~node A1 checkpoint="High switching costs" title="Optional new title"
+ *
+ * Preferred semantic-hint form:
+ *   +node A1 analysis title="Business model" checkpoint="High switching costs" keywords="SaaS|retention" status="active"
+ *
+ * Other operations:
+ *   focus: A1
+ *   ~node A1 checkpoint="Updated judgment" keywords="pricing|margin"
  *   +edge A1 C1 compares
  *   -edge A1 C1 [compares]
  */
@@ -100,7 +129,7 @@ export function parseGraphDelta(block) {
     .filter(Boolean);
 
   if (!lines.length || !lines[0].startsWith('RGΔ')) {
-    return { version: 1, operations: [], errors: ['Missing RGΔ marker'] };
+    return { version: 2, operations: [], errors: ['Missing RGΔ marker'] };
   }
 
   const operations = [];
@@ -118,16 +147,46 @@ export function parseGraphDelta(block) {
 
     if (line.startsWith('+node ')) {
       const tokens = tokenize(line);
-      if (tokens.length < 4) {
+      if (tokens.length < 3) {
         errors.push(`Line ${i + 1}: invalid +node`);
         continue;
       }
-      operations.push({
-        op: 'addNode',
-        semanticId: tokens[1],
-        nodeType: normalizeNodeType(tokens[2]),
-        title: unquote(tokens.slice(3).join(' '))
-      });
+
+      const semanticId = tokens[1];
+      const nodeType = normalizeNodeType(tokens[2]);
+      const rest = line.slice(line.indexOf(tokens[2]) + tokens[2].length).trim();
+      const assignmentMode = /(?:^|\s)(?:title|checkpoint|keywords|status)=/.test(rest);
+
+      if (assignmentMode) {
+        const patch = normalizeNodePatch(parseAssignments(rest));
+        if (!patch.title) {
+          errors.push(`Line ${i + 1}: +node semantic-hint form requires title=`);
+          continue;
+        }
+        operations.push({
+          op: 'addNode',
+          semanticId,
+          nodeType,
+          title: patch.title,
+          checkpoint: patch.checkpoint || '',
+          keywords: patch.keywords || [],
+          status: patch.status || null
+        });
+      } else {
+        if (tokens.length < 4) {
+          errors.push(`Line ${i + 1}: invalid +node`);
+          continue;
+        }
+        operations.push({
+          op: 'addNode',
+          semanticId,
+          nodeType,
+          title: unquote(tokens.slice(3).join(' ')),
+          checkpoint: '',
+          keywords: [],
+          status: null
+        });
+      }
       continue;
     }
 
@@ -139,8 +198,7 @@ export function parseGraphDelta(block) {
       }
       const semanticId = tokens[1];
       const assignmentText = line.slice(line.indexOf(semanticId) + semanticId.length).trim();
-      const patch = parseAssignments(assignmentText);
-      if (patch.type) patch.type = normalizeNodeType(patch.type);
+      const patch = normalizeNodePatch(parseAssignments(assignmentText));
       operations.push({ op: 'updateNode', semanticId, patch });
       continue;
     }
@@ -178,7 +236,7 @@ export function parseGraphDelta(block) {
     errors.push(`Line ${i + 1}: unknown operation: ${line}`);
   }
 
-  return { version: 1, operations, errors };
+  return { version: 2, operations, errors };
 }
 
 function internalNodeId(semanticId) {
@@ -219,6 +277,22 @@ function deterministicEdgeId(fromId, toId, relation) {
   return `rg_edge_${fromId}_${toId}_${relation}`.replace(/[^A-Za-z0-9_.:-]/g, '_');
 }
 
+function applySemanticFields(data, operation) {
+  if (!data.titleEdited && operation.title) {
+    data.title = operation.title;
+    data.titleSource = 'ai';
+  }
+  if (!data.checkpointEdited && operation.checkpoint) {
+    data.checkpoint = operation.checkpoint;
+    data.checkpointSource = 'ai';
+  }
+  if (!data.keywordsEdited && Array.isArray(operation.keywords) && operation.keywords.length) {
+    data.keywords = operation.keywords;
+    data.keywordsSource = 'ai';
+  }
+  if (operation.status) data.status = operation.status;
+}
+
 /**
  * Pure reducer. Manual user edits win over AI updates when an *Edited flag is set.
  */
@@ -235,7 +309,7 @@ export function applyGraphDelta(graph, delta, context = {}) {
       const existing = findNodeBySemanticId(nodes, operation.semanticId);
       if (existing) {
         existing.data.type = existing.data.typeEdited ? existing.data.type : operation.nodeType;
-        existing.data.title = existing.data.titleEdited ? existing.data.title : operation.title;
+        applySemanticFields(existing.data, operation);
         existing.data.autoGenerated = true;
         existing.data.semanticId = operation.semanticId;
         if (!existing.data.messageId && context.messageId) existing.data.messageId = context.messageId;
@@ -256,8 +330,13 @@ export function applyGraphDelta(graph, delta, context = {}) {
           title: operation.title,
           titleSource: 'ai',
           titleEdited: false,
-          checkpoint: '',
-          keywords: [],
+          checkpoint: operation.checkpoint || '',
+          checkpointSource: operation.checkpoint ? 'ai' : null,
+          checkpointEdited: false,
+          keywords: Array.isArray(operation.keywords) ? operation.keywords : [],
+          keywordsSource: operation.keywords?.length ? 'ai' : null,
+          keywordsEdited: false,
+          status: operation.status || null,
           messageId: context.messageId || null,
           messageRole: context.role || 'assistant',
           messagePreview: context.preview || '',
@@ -275,12 +354,19 @@ export function applyGraphDelta(graph, delta, context = {}) {
     if (operation.op === 'updateNode') {
       const node = findNodeBySemanticId(nodes, operation.semanticId);
       if (!node) continue;
-      const patch = operation.patch || {};
+      const patch = normalizeNodePatch(operation.patch || {});
       if (patch.title && !node.data.titleEdited) {
         node.data.title = patch.title;
         node.data.titleSource = 'ai';
       }
-      if (patch.checkpoint && !node.data.checkpointEdited) node.data.checkpoint = patch.checkpoint;
+      if (patch.checkpoint && !node.data.checkpointEdited) {
+        node.data.checkpoint = patch.checkpoint;
+        node.data.checkpointSource = 'ai';
+      }
+      if (patch.keywords?.length && !node.data.keywordsEdited) {
+        node.data.keywords = patch.keywords;
+        node.data.keywordsSource = 'ai';
+      }
       if (patch.type && !node.data.typeEdited) node.data.type = normalizeNodeType(patch.type);
       if (patch.status) node.data.status = patch.status;
       if (context.messageId) {
