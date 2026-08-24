@@ -4,7 +4,6 @@ import {
   conversationProjectKey,
   projectGraphKey
 } from '../../shared/researchScope';
-import { decorateGraphWithConversation } from '../utils/researchProjectStore';
 
 function conversationIdFromUrl(url) {
   try {
@@ -21,10 +20,91 @@ async function activeConversationId() {
   return conversationIdFromUrl(tab?.url || '');
 }
 
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function appendSource(list, source) {
+  const items = Array.isArray(list) ? [...list] : [];
+  const duplicate = items.some((item) => item?.conversationId === source.conversationId && item?.messageId === source.messageId);
+  if (!duplicate) items.push(source);
+  return items.slice(-40);
+}
+
+function reconcileMirrorMutation(canonical, local, conversationId) {
+  if (!canonical) {
+    return {
+      ...local,
+      nodes: (local.nodes || []).map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          sources: appendSource(node.data?.sources, {
+            conversationId,
+            messageId: node.data?.messageId || null,
+            addedAt: Date.now()
+          }),
+          highlights: (node.data?.highlights || []).map((highlight) => ({ ...highlight, conversationId: highlight.conversationId || conversationId }))
+        }
+      }))
+    };
+  }
+
+  const canonicalNodes = new Map((canonical.nodes || []).map((node) => [node.id, node]));
+  const nodes = (local.nodes || []).map((node) => {
+    const before = canonicalNodes.get(node.id);
+    if (!before) {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          sources: appendSource(node.data?.sources, {
+            conversationId,
+            messageId: node.data?.messageId || null,
+            addedAt: Date.now()
+          }),
+          highlights: (node.data?.highlights || []).map((highlight) => ({ ...highlight, conversationId: highlight.conversationId || conversationId }))
+        }
+      };
+    }
+
+    const beforeHighlights = new Map((before.data?.highlights || []).map((item) => [item.id || `${item.messageId}:${cleanText(item.quote)}`, item]));
+    const highlights = (node.data?.highlights || []).map((highlight) => {
+      const key = highlight.id || `${highlight.messageId}:${cleanText(highlight.quote)}`;
+      const existed = beforeHighlights.has(key);
+      return existed ? highlight : { ...highlight, conversationId: highlight.conversationId || conversationId };
+    });
+
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        sources: before.data?.sources || node.data?.sources || [],
+        highlights
+      }
+    };
+  });
+
+  const canonicalEdges = new Map((canonical.edges || []).map((edge) => [edge.id, edge]));
+  const edges = (local.edges || []).map((edge) => {
+    const before = canonicalEdges.get(edge.id);
+    if (before) return { ...edge, data: { ...edge.data, sources: before.data?.sources || edge.data?.sources || [] } };
+    return {
+      ...edge,
+      data: {
+        ...edge.data,
+        sources: appendSource(edge.data?.sources, { conversationId, messageId: null, addedAt: Date.now() })
+      }
+    };
+  });
+
+  return { ...local, nodes, edges };
+}
+
 /**
- * Compatibility bridge for content scripts that still write the per-chat key.
- * Project graph remains canonical. The bridge copies a newer selection/manual
- * mutation from the conversation mirror back into its canonical project graph.
+ * Compatibility bridge for the selection content script. It writes the per-chat
+ * mirror; only the changed/new material is reconciled into the canonical project
+ * graph so provenance is not sprayed across unrelated project nodes.
  */
 export default function ResearchProjectMirrorBridge() {
   useEffect(() => {
@@ -38,7 +118,6 @@ export default function ResearchProjectMirrorBridge() {
       try {
         const conversationId = await activeConversationId();
         if (!conversationId) return;
-
         const mappingKey = conversationProjectKey(conversationId);
         const mapping = await chrome.storage.local.get([mappingKey]);
         const projectId = mapping?.[mappingKey] || null;
@@ -55,40 +134,34 @@ export default function ResearchProjectMirrorBridge() {
         const canonicalUpdated = Number(canonical?.updatedAt || 0);
         const selectionAt = Number(local.metadata?.lastSelectionAt || 0);
         const canonicalSelectionAt = Number(canonical?.metadata?.lastSelectionAt || 0);
-
-        // Only content-script/manual mutations should flow mirror -> canonical.
-        // Canonical AI delta writes already mirror in the opposite direction.
         if (localUpdated <= canonicalUpdated && selectionAt <= canonicalSelectionAt) return;
 
-        const decorated = decorateGraphWithConversation(local, conversationId);
+        const reconciled = reconcileMirrorMutation(canonical, local, conversationId);
         const now = Date.now();
-        await chrome.storage.local.set({
-          [canonicalKey]: {
-            ...decorated,
-            conversationId: null,
+        const canonicalPayload = {
+          ...reconciled,
+          conversationId: null,
+          projectId,
+          metadata: {
+            ...(reconciled.metadata || {}),
             projectId,
-            metadata: {
-              ...(decorated.metadata || {}),
-              projectId,
-              researchScope: 'project',
-              projectMirrorOf: null,
-              mirroredFromConversationId: conversationId,
-              mirroredFromConversationAt: now
-            },
-            updatedAt: now
+            researchScope: 'project',
+            projectMirrorOf: null,
+            mirroredFromConversationId: conversationId,
+            mirroredFromConversationAt: now
           },
+          updatedAt: now
+        };
+        await chrome.storage.local.set({
+          [canonicalKey]: canonicalPayload,
           [localKey]: {
-            ...decorated,
+            ...canonicalPayload,
             conversationId,
-            projectId,
             metadata: {
-              ...(decorated.metadata || {}),
-              projectId,
-              researchScope: 'project',
+              ...(canonicalPayload.metadata || {}),
               projectMirrorOf: projectId,
               projectMirrorAt: now
-            },
-            updatedAt: now
+            }
           }
         });
       } catch (error) {
