@@ -4,7 +4,7 @@ const elk = new ELK();
 
 export const RESEARCH_NODE_WIDTH = 200;
 export const RESEARCH_NODE_HEIGHT = 88;
-export const RESEARCH_LAYOUT_ALGORITHM = 'elk-layered-down-v2';
+export const RESEARCH_LAYOUT_ALGORITHM = 'elk-layered-down-v3';
 
 export function cleanResearchRelation(edge) {
   return String(edge?.data?.relation || edge?.label || 'informs').trim().toLowerCase();
@@ -175,7 +175,8 @@ function translatedTargets(nodes, elkChildren, layoutState) {
     dy.push(current.y - target.y);
   }
 
-  // Keep the whole drawing anchored near where the user already knows it.
+  // Keep the whole drawing anchored near where the user already knows it. This
+  // translates the complete layout as one unit; it does not change rank depth.
   const offsetX = dx.length ? average(dx) : 0;
   const offsetY = dy.length ? average(dy) : 0;
   const translated = new Map();
@@ -189,6 +190,9 @@ function translatedTargets(nodes, elkChildren, layoutState) {
  * Run ELK on the primary deepens backbone only. Canonical deepens edges are
  * child -> parent, so layout edges are deliberately reversed to parent -> child.
  * Cross-links are excluded from ranking; React Flow renders them contextually.
+ *
+ * v3 invariant: vertical depth is structural. User/current positions can soften
+ * horizontal placement, but cannot pull a child back onto its parent's rank.
  */
 export async function layoutResearchGraph(nodes = [], edges = [], previousLayoutState = {}) {
   if (!nodes.length) {
@@ -225,12 +229,12 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
       'elk.algorithm': 'layered',
       'elk.direction': 'DOWN',
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.spacing.nodeNode': '56',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '78',
-      'elk.layered.spacing.edgeNodeBetweenLayers': '30',
+      'elk.spacing.nodeNode': '64',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '92',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '34',
       'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.semiInteractive': 'true',
-      'elk.padding': '[top=24,left=24,bottom=24,right=24]'
+      'elk.padding': '[top=28,left=28,bottom=28,right=28]'
     },
     children: nodes.map((node) => ({
       id: String(node.id),
@@ -255,16 +259,17 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
 
     let next;
     if (preferred) {
-      // A drag means “keep it around here”, not “freeze this coordinate”.
+      // Dragging means “prefer this horizontal neighborhood”. Vertical rank is
+      // semantic and therefore still comes directly from ELK.
       next = {
-        x: blend(preferred.x, target.x, 0.78),
-        y: blend(preferred.y, target.y, 0.58)
+        x: blend(preferred.x, target.x, 0.72),
+        y: target.y
       };
     } else if (existedBefore) {
-      // Preserve the mental map horizontally; let hierarchy settle vertically.
+      // Preserve some horizontal mental map while enforcing exact rank depth.
       next = {
-        x: blend(current.x, target.x, 0.58),
-        y: blend(current.y, target.y, 0.34)
+        x: blend(current.x, target.x, 0.52),
+        y: target.y
       };
     } else {
       next = target;
@@ -278,7 +283,6 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
     return { ...node, position: rounded };
   });
 
-  // Remove preferences for nodes that no longer exist.
   const liveIds = new Set(nodes.map((node) => String(node.id)));
   for (const id of Object.keys(preferredPositions)) {
     if (!liveIds.has(id)) delete preferredPositions[id];
