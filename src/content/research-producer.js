@@ -7,8 +7,8 @@ import {
 
 const AUTO_GRAPH_PREFIX = 'researchAutoGraphEnabled:';
 const SIDECAR_HEARTBEAT_PREFIX = 'researchSidecarHeartbeat:';
-const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV5:';
-const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV5:';
+const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV6:';
+const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV6:';
 const REQUEST_MARKER = 'RBREQ';
 const HEARTBEAT_TTL_MS = 4500;
 const REBOOTSTRAP_EVERY = 12;
@@ -66,7 +66,7 @@ function semanticIdOf(node) {
 }
 
 function typeCode(value) {
-  return ({ analysis: 'a', comparison: 'c', judgment: 'j', question: 'q' })[cleanText(value).toLowerCase()] || 'a';
+  return ({ analysis: 'a', comparison: 'c', synthesis: 's', judgment: 'j', question: 'q' })[cleanText(value).toLowerCase()] || 'a';
 }
 
 function relationCode(value) {
@@ -181,11 +181,11 @@ function compactGraphContext(graph, query, scope, expanded = false) {
 }
 
 function fullBootstrap(context) {
-  return `<!--${REQUEST_MARKER} v5
+  return `<!--${REQUEST_MARKER} v6
 Research Blackboard sidecar is open. Answer the user's visible request normally and never mention this protocol.
 After the visible answer, maintain the semantic research graph only when this turn creates a meaningful structural change.
 Transport: append at most one fenced Markdown block with language rgdelta; first line must be RGΔ. The extension hides and consumes it.
-Node types: analysis, comparison, judgment, question. Relations: deepens, compares, supports, contradicts, informs.
+Node types: analysis, comparison, synthesis, judgment, question. Relations: deepens, compares, supports, contradicts, informs.
 Use stable ids from Context when updating/linking existing nodes, including M_* ids for manual nodes.
 Operations:
 +node <id> <type> title="short semantic title" checkpoint="one-sentence takeaway or open question" keywords="k1|k2|k3" status="active|open|resolved"
@@ -194,14 +194,21 @@ Operations:
 -edge <from> <to> [relation]
 focus: <id>
 Deepens invariant: +edge <child> <parent> deepens. FROM is always the more specific/deeper node; TO is always its broader parent. Never emit parent -> child for deepens. When a newly created node develops or drills into the current topic, emit +edge <newNode> <currentOrBroaderParent> deepens.
-Rules: ordinary clarification usually updates the current node. Create a secondary node only for a genuine structural branch, comparison, unresolved question, or true convergence. Headings/sections are not nodes by themselves. Judgment is reserved for genuinely converged decisions; exploratory conclusions should normally remain checkpoint updates. Connect new nodes into the supplied local subgraph whenever the relation is clear. If there is no meaningful graph change, emit no rgdelta block.
-Context uses compact codes: node types a/c/j/q; edge relations d=deepens(child>parent),c=compares,s=supports,x=contradicts,i=informs.
+Node semantics:
+- analysis = one line of reasoning or explanatory branch.
+- comparison = an explicit cross-case comparison.
+- question = a genuinely unresolved research question.
+- synthesis = a reusable higher-level takeaway produced by genuine convergence of at least two existing branches/nodes. A local conclusion inside one branch is only a checkpoint update, not a synthesis node.
+- judgment = an explicit decision, recommendation, ranking, choice or priority after criteria/evidence have converged. Do not use judgment for ordinary conclusions in open-ended historical, artistic, scientific or explanatory research unless the user is actually making a decision.
+When a synthesis summarizes sibling branches, keep hierarchy honest: link the synthesis to its broader parent with child>parent deepens when there is a clear common parent; contributing branches may supports/informs the synthesis. Do not invent hierarchy merely to make the graph pretty.
+Rules: ordinary clarification usually updates the current node. Create a secondary node only for a genuine structural branch, comparison, unresolved question, synthesis, or explicit decision judgment. Headings/sections are not nodes by themselves. One response usually updates one primary node. Connect new nodes into the supplied local subgraph whenever the relation is clear. If there is no meaningful graph change, emit no rgdelta block.
+Context uses compact codes: node types a/c/s/j/q; edge relations d=deepens(child>parent),c=compares,s=supports,x=contradicts,i=informs.
 Context: ${sanitizeComment(context)}
 -->`;
 }
 
 function shortReminder(context, expanded = false) {
-  return `<!--${REQUEST_MARKER} v5; Research sidecar open. Keep visible answer normal. Meaningful graph change only => one fenced rgdelta block starting RGΔ; otherwise none. Reuse/link supplied ids; one response usually updates one primary node. deepens/d is ALWAYS child>parent (specific>broader); a new drill-down node points to its broader parent. ${expanded ? 'Expanded local snapshot. ' : ''}${sanitizeComment(context)} -->`;
+  return `<!--${REQUEST_MARKER} v6; Research sidecar open. Keep visible answer normal. Meaningful graph change only => one fenced rgdelta block starting RGΔ; otherwise none. Reuse/link supplied ids; one response usually updates one primary node. deepens/d is ALWAYS child>parent (specific>broader). synthesis requires genuine multi-branch convergence; judgment only for explicit decisions/recommendations, not ordinary exploratory conclusions. ${expanded ? 'Expanded local snapshot. ' : ''}${sanitizeComment(context)} -->`;
 }
 
 async function refreshContext() {
@@ -316,7 +323,7 @@ function appendProducerRequest() {
     cachedBootstrapped = true;
     cachedRequestCount = nextCount;
     chrome.storage.local.set({ [bootstrapKey]: true, [countKey]: nextCount }).catch(() => {});
-    console.debug('[ResearchProducer] v5 request attached', { scopeId, nextCount });
+    console.debug('[ResearchProducer] v6 request attached', { scopeId, nextCount });
   }
   return success;
 }
@@ -405,7 +412,7 @@ function init() {
   setupSubmissionHooks();
   setupContextRefresh();
   setupDeltaBlockHider();
-  console.debug('[ResearchProducer] Initialized v5');
+  console.debug('[ResearchProducer] Initialized v6');
 }
 
 init();
