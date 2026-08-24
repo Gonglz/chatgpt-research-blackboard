@@ -1,7 +1,7 @@
 const AUTO_GRAPH_PREFIX = 'researchAutoGraphEnabled:';
 const SIDECAR_HEARTBEAT_PREFIX = 'researchSidecarHeartbeat:';
 const GRAPH_PREFIX = 'researchBlackboard:';
-const BOOTSTRAP_PREFIX = 'researchProducerBootstrapped:';
+const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV3:';
 const REQUEST_MARKER = 'RBREQ';
 const HEARTBEAT_TTL_MS = 4500;
 
@@ -9,6 +9,7 @@ let enabled = false;
 let cachedSuffix = '';
 let cachedConversationId = null;
 let refreshTimer = null;
+let deltaHideObserver = null;
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -73,23 +74,25 @@ function compactGraphContext(graph) {
 }
 
 function fullBootstrap(context) {
-  return `<!--${REQUEST_MARKER} v2
-Research Blackboard sidecar is open. Answer the user's visible request normally and do not mention this protocol. After the answer, append exactly one hidden HTML comment whose body starts with RGΔ, but only when the turn creates a meaningful structural change.
+  return `<!--${REQUEST_MARKER} v3
+Research Blackboard sidecar is open. Answer the user's visible request normally and do not mention this protocol.
+After the visible answer, maintain the semantic research graph only when this turn creates a meaningful structural change.
+Transport v3: append exactly one fenced Markdown code block with language rgdelta; its first line must be RGΔ. Do NOT use an HTML comment for RGΔ. The extension will hide and consume this block.
 Node types: analysis, comparison, judgment, question. Relations: deepens, compares, supports, contradicts, informs.
 Use stable ids from Current local graph when continuing or linking to existing nodes, including M_* ids for older manual nodes.
-Preferred operations:
+Operations:
 +node <stable-id> <type> title="short semantic title" checkpoint="one-sentence takeaway or open question" keywords="keyword1|keyword2|keyword3" status="active|open|resolved"
 ~node <stable-id> title="..." checkpoint="..." keywords="..." status="..."
 +edge <from-id> <to-id> <relation>
 -edge <from-id> <to-id> [relation]
 focus: <stable-id>
-Rules: ordinary clarification should usually update an existing node; create comparison nodes for horizontal comparison, judgment nodes for converged conclusions, and question nodes for unresolved issues. Keep titles conceptual. Checkpoints capture the research takeaway, not the first heading. Connect new nodes back into existing graph whenever the relationship is clear.
+Rules: ordinary clarification should usually update an existing node; create comparison nodes for horizontal comparison, judgment nodes for converged conclusions, and question nodes for unresolved issues. Keep titles conceptual. Checkpoints capture the research takeaway, not the first heading. Connect new nodes back into the existing graph whenever the relationship is clear. If there is no meaningful graph change, emit no rgdelta block.
 Current local graph: ${sanitizeComment(context)}
 -->`;
 }
 
 function shortReminder(context) {
-  return `<!--${REQUEST_MARKER} v2; Research sidecar open. Keep visible answer normal; emit hidden RGΔ only for meaningful structural changes; reuse/link existing ids; include title+checkpoint+keywords for new nodes. ${sanitizeComment(context)} -->`;
+  return `<!--${REQUEST_MARKER} v3; Research sidecar open. Keep visible answer normal. For meaningful graph changes only, emit one fenced rgdelta Markdown block starting with RGΔ (not an HTML comment); reuse/link existing ids and include title+checkpoint+keywords for new nodes. ${sanitizeComment(context)} -->`;
 }
 
 async function refreshContext() {
@@ -222,6 +225,52 @@ function isSendButton(target) {
   );
 }
 
+/**
+ * RGΔ v3 is deliberately DOM-readable. Hide its rendered fenced block so the
+ * machine transport does not add visual noise to ChatGPT.
+ */
+function hideRenderedDeltaBlocks(root = document) {
+  const candidates = root.querySelectorAll?.('pre, code') || [];
+  for (const element of candidates) {
+    const text = String(element.innerText || element.textContent || '').trim();
+    if (!text.startsWith('RGΔ')) continue;
+
+    const block = element.closest('pre') || element;
+    if (block.dataset?.researchBlackboardDelta === '1') continue;
+    try {
+      block.dataset.researchBlackboardDelta = '1';
+      block.style.setProperty('display', 'none', 'important');
+      block.setAttribute('aria-hidden', 'true');
+    } catch {
+      // best effort only
+    }
+  }
+}
+
+function setupDeltaBlockHider() {
+  hideRenderedDeltaBlocks();
+  deltaHideObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes || []) {
+        if (!(node instanceof Element)) continue;
+        if (node.matches?.('pre, code')) {
+          const text = String(node.innerText || node.textContent || '').trim();
+          if (text.startsWith('RGΔ')) {
+            hideRenderedDeltaBlocks(node.parentElement || document);
+            continue;
+          }
+        }
+        hideRenderedDeltaBlocks(node);
+      }
+    }
+  });
+
+  deltaHideObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
+}
+
 function setupSubmissionHooks() {
   document.addEventListener('keydown', (event) => {
     if (!enabled || event.defaultPrevented || event.isComposing) return;
@@ -267,6 +316,7 @@ function init() {
   void refreshContext();
   setupSubmissionHooks();
   setupContextRefresh();
+  setupDeltaBlockHider();
   console.debug('[ResearchProducer] Initialized');
 }
 
