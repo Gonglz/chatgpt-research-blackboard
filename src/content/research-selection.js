@@ -100,6 +100,38 @@ function rangeContext(range, container) {
   return { startOffset, endOffset, prefix, suffix };
 }
 
+function localSelectionContext(range, container) {
+  const anchor = range.startContainer instanceof Element
+    ? range.startContainer
+    : range.startContainer?.parentElement;
+  if (!anchor) return { heading: '', paragraph: '' };
+
+  const paragraphNode = anchor.closest?.('p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6');
+  const paragraph = cleanText(paragraphNode?.innerText || paragraphNode?.textContent || '');
+
+  let heading = '';
+  try {
+    const headings = Array.from(container.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+    for (const candidate of headings) {
+      if (candidate === anchor || candidate.contains(anchor)) {
+        heading = cleanText(candidate.innerText || candidate.textContent || '');
+        break;
+      }
+      const relation = candidate.compareDocumentPosition(anchor);
+      if (relation & Node.DOCUMENT_POSITION_FOLLOWING) {
+        heading = cleanText(candidate.innerText || candidate.textContent || '');
+      }
+    }
+  } catch {
+    // Best effort only.
+  }
+
+  return {
+    heading: heading.slice(0, 160),
+    paragraph: paragraph.slice(0, 520)
+  };
+}
+
 function captureSelection() {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
@@ -112,13 +144,13 @@ function captureSelection() {
   if (!container) return null;
 
   const role = messageRole(container);
-  // This interaction is intentionally about extracting useful material from answers.
   if (role && role !== 'assistant') return null;
 
   const rect = range.getBoundingClientRect();
   if (!rect || (!rect.width && !rect.height)) return null;
 
   const context = rangeContext(range, container);
+  const local = localSelectionContext(range, container);
   const fullText = cleanText(container.innerText || container.textContent || '');
 
   return {
@@ -134,6 +166,8 @@ function captureSelection() {
     endOffset: context.endOffset,
     prefix: context.prefix,
     suffix: context.suffix,
+    localHeading: local.heading,
+    localParagraph: local.paragraph,
     rect: {
       left: rect.left,
       right: rect.right,
@@ -151,16 +185,79 @@ function semanticIdOf(node) {
   return null;
 }
 
+function cjkBigrams(value) {
+  const text = cleanText(value).replace(/[\s，。！？；、：:（）()《》“”"'`~!@#$%^&*+=\[\]{}<>/\\|_-]+/g, '');
+  const grams = new Set();
+  for (let i = 0; i < text.length - 1; i++) {
+    grams.add(text.slice(i, i + 2));
+  }
+  return grams;
+}
+
+function overlapScore(a, b) {
+  if (!a || !b) return 0;
+  const left = cjkBigrams(a);
+  const right = cjkBigrams(b);
+  if (!left.size || !right.size) return 0;
+  let hits = 0;
+  for (const gram of left) if (right.has(gram)) hits += 1;
+  return hits / Math.max(1, Math.min(left.size, right.size));
+}
+
+function nodeSemanticText(node) {
+  return cleanText([
+    node?.data?.title,
+    ...(Array.isArray(node?.data?.keywords) ? node.data.keywords : []),
+    node?.data?.checkpoint
+  ].filter(Boolean).join(' '));
+}
+
+function scoreNodeForSelection(node, payload, focusId) {
+  const semantic = nodeSemanticText(node);
+  const local = cleanText([
+    payload.quote,
+    payload.localHeading,
+    payload.localParagraph,
+    payload.prefix,
+    payload.suffix
+  ].filter(Boolean).join(' '));
+
+  let score = overlapScore(semantic, local) * 30;
+  const keywords = Array.isArray(node?.data?.keywords) ? node.data.keywords : [];
+  for (const keyword of keywords) {
+    if (keyword && payload.quote?.includes(keyword)) score += 8;
+    else if (keyword && payload.localHeading?.includes(keyword)) score += 6;
+    else if (keyword && payload.localParagraph?.includes(keyword)) score += 4;
+  }
+
+  const title = cleanText(node?.data?.title);
+  if (title && payload.localHeading && (title.includes(payload.localHeading) || payload.localHeading.includes(title))) {
+    score += 10;
+  }
+
+  // Focus is only a tie-breaker. Location/context must dominate ownership.
+  if (focusId && node.id === focusId) score += 1.5;
+  return score;
+}
+
 function resolveTargetNode(graph, selectionPayload) {
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   if (!nodes.length) return null;
 
-  // Prefer the semantic node actually anchored to the answer the user selected.
-  const exact = nodes.find((node) => (
+  const sameMessage = nodes.filter((node) => (
     node?.data?.messageId === selectionPayload.messageId
     || (Array.isArray(node?.data?.sourceMessageIds) && node.data.sourceMessageIds.includes(selectionPayload.messageId))
   ));
-  if (exact) return exact;
+
+  if (sameMessage.length === 1) return sameMessage[0];
+
+  if (sameMessage.length > 1) {
+    const focusId = graph?.metadata?.focusNodeId || null;
+    const ranked = sameMessage
+      .map((node) => ({ node, score: scoreNodeForSelection(node, selectionPayload, focusId) }))
+      .sort((a, b) => b.score - a.score);
+    return ranked[0]?.node || null;
+  }
 
   const focusId = graph?.metadata?.focusNodeId;
   if (focusId) {
@@ -184,6 +281,8 @@ function makeHighlight(payload) {
     endOffset: Number.isInteger(payload.endOffset) ? payload.endOffset : -1,
     prefix: payload.prefix || '',
     suffix: payload.suffix || '',
+    localHeading: payload.localHeading || '',
+    localParagraph: payload.localParagraph || '',
     createdAt: Date.now()
   };
 }
@@ -234,6 +333,7 @@ async function saveHighlightToGraph(payload) {
   }
 
   const highlight = makeHighlight(payload);
+  let inserted = false;
   const nodes = graph.nodes.map((node) => {
     if (node.id !== target.id) return node;
     const existing = Array.isArray(node?.data?.highlights) ? node.data.highlights : [];
@@ -241,6 +341,7 @@ async function saveHighlightToGraph(payload) {
       item?.messageId === highlight.messageId && cleanText(item?.quote) === cleanText(highlight.quote)
     ));
     if (duplicate) return node;
+    inserted = true;
     return {
       ...node,
       data: {
@@ -256,13 +357,19 @@ async function saveHighlightToGraph(payload) {
       nodes,
       metadata: {
         ...(graph.metadata || {}),
+        selectedNodeId: target.id,
         lastSelectionAt: Date.now()
       },
       updatedAt: Date.now()
     }
   });
 
-  return { ok: true, message: `Saved to ${target.data?.title || 'node'}` };
+  return {
+    ok: true,
+    message: inserted
+      ? `Saved to ${target.data?.title || 'node'}`
+      : `Already saved in ${target.data?.title || 'node'}`
+  };
 }
 
 async function createNodeFromSelection(payload, nodeType = 'analysis') {
@@ -329,6 +436,7 @@ async function createNodeFromSelection(payload, nodeType = 'analysis') {
       metadata: {
         ...(graph.metadata || {}),
         focusNodeId: id,
+        selectedNodeId: id,
         lastSelectionAt: Date.now()
       },
       updatedAt: Date.now()
@@ -361,9 +469,10 @@ function setToolbarStatus(message, ok = true) {
   if (!toolbar) return;
   const status = toolbar.querySelector('[data-rb-selection-status]');
   if (!status) return;
+  status.style.display = 'inline-block';
   status.textContent = message;
   status.style.color = ok ? '#166534' : '#b45309';
-  window.setTimeout(() => removeToolbar(), ok ? 650 : 1500);
+  window.setTimeout(() => removeToolbar(), ok ? 850 : 1800);
 }
 
 function closeTypeMenu() {
@@ -474,7 +583,7 @@ async function showToolbarForSelection() {
 
   const status = document.createElement('span');
   status.dataset.rbSelectionStatus = '1';
-  status.style.cssText = 'display:none;max-width:180px;font:11px/1.2 system-ui;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+  status.style.cssText = 'display:none;max-width:210px;font:11px/1.2 system-ui;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
 
   root.append(saveButton, nodeButton, status);
   document.documentElement.appendChild(root);
