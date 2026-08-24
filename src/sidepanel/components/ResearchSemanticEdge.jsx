@@ -17,8 +17,8 @@ function relationOf(data, label) {
 }
 
 function nodeBounds(node) {
-  const x = Number(node?.internals?.positionAbsolute?.x ?? node?.position?.x ?? 0);
-  const y = Number(node?.internals?.positionAbsolute?.y ?? node?.position?.y ?? 0);
+  const x = Number(node?.position?.x ?? 0);
+  const y = Number(node?.position?.y ?? 0);
   const width = Number(node?.measured?.width ?? node?.width ?? NODE_WIDTH) || NODE_WIDTH;
   const height = Number(node?.measured?.height ?? node?.height ?? NODE_HEIGHT) || NODE_HEIGHT;
   return { x, y, width, height, cx: x + width / 2, cy: y + height / 2 };
@@ -42,8 +42,8 @@ function ResearchSemanticEdge({
   markerStart
 }) {
   const relation = relationOf(data, label);
-  const sourceNode = useStore((state) => state.nodeLookup?.get(source));
-  const targetNode = useStore((state) => state.nodeLookup?.get(target));
+  const sourceNode = useStore((state) => state.nodes?.find((node) => node.id === source));
+  const targetNode = useStore((state) => state.nodes?.find((node) => node.id === target));
   const selectedNodeId = useStore((state) => {
     const selected = state.nodes?.find((node) => node.selected);
     return selected?.id || null;
