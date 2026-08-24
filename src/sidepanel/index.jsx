@@ -74,20 +74,24 @@ function renderApp() {
   );
 }
 
-// Only auto-delta writes should remount App. Normal research graph saves caused by
-// dragging/editing nodes preserve lastDeltaAt and therefore do not disturb the UI.
+// Automatic graph updates and Selection -> Highlight/Node captures remount App.
+// Normal node dragging/editing preserves these timestamps and therefore does not
+// disturb the user's current canvas state.
 try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
 
-    const deltaChanged = Object.entries(changes || {}).some(([key, change]) => {
+    const researchChanged = Object.entries(changes || {}).some(([key, change]) => {
       if (!key.startsWith('researchBlackboard:')) return false;
-      const before = change?.oldValue?.metadata?.lastDeltaAt || null;
-      const after = change?.newValue?.metadata?.lastDeltaAt || null;
-      return !!after && before !== after;
+      const beforeDelta = change?.oldValue?.metadata?.lastDeltaAt || null;
+      const afterDelta = change?.newValue?.metadata?.lastDeltaAt || null;
+      const beforeSelection = change?.oldValue?.metadata?.lastSelectionAt || null;
+      const afterSelection = change?.newValue?.metadata?.lastSelectionAt || null;
+      return (!!afterDelta && beforeDelta !== afterDelta)
+        || (!!afterSelection && beforeSelection !== afterSelection);
     });
 
-    if (!deltaChanged) return;
+    if (!researchChanged) return;
     researchRenderRevision += 1;
     renderApp();
   });
