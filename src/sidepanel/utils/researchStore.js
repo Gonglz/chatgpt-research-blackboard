@@ -25,6 +25,13 @@ function emptyGraph() {
   };
 }
 
+function appendSource(list, source) {
+  const items = Array.isArray(list) ? [...list] : [];
+  const duplicate = items.some((item) => item?.conversationId === source.conversationId && item?.messageId === source.messageId);
+  if (!duplicate) items.push(source);
+  return items.slice(-40);
+}
+
 function normalizeStored(stored) {
   if (!stored || !Array.isArray(stored.nodes) || !Array.isArray(stored.edges)) return emptyGraph();
   return {
@@ -65,30 +72,88 @@ export async function loadResearchGraph(conversationId) {
 }
 
 /**
- * Save graph state while preserving metadata written by the Graph Delta engine.
- * In project mode, the project graph is canonical and the active conversation
- * receives an exact mirror so DOM content scripts can keep using the legacy key.
+ * Save graph state while preserving Graph Delta metadata. In project mode the
+ * project graph is canonical; only newly-created nodes/edges receive provenance
+ * from the current conversation, while existing provenance is preserved.
  */
 export async function saveResearchGraph(conversationId, nodes, edges, metadataPatch = {}) {
   if (!conversationId) return;
 
   const scope = await resolveResearchScope(conversationId);
   let existingMetadata = {};
+  let existingNodes = [];
+  let existingEdges = [];
 
   try {
     const result = await chrome.storage.local.get([scope.graphKey]);
-    existingMetadata = result?.[scope.graphKey]?.metadata || {};
+    const existing = result?.[scope.graphKey] || null;
+    existingMetadata = existing?.metadata || {};
+    existingNodes = Array.isArray(existing?.nodes) ? existing.nodes : [];
+    existingEdges = Array.isArray(existing?.edges) ? existing.edges : [];
   } catch {
     // Preserve normal save behavior even if the read fails.
   }
 
   const now = Date.now();
+  let nextNodes = nodes;
+  let nextEdges = edges;
+
+  if (scope.type === 'project') {
+    const previousNodes = new Map(existingNodes.map((node) => [node.id, node]));
+    nextNodes = (nodes || []).map((node) => {
+      const previous = previousNodes.get(node.id);
+      if (previous) {
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            sources: node.data?.sources || previous.data?.sources || []
+          }
+        };
+      }
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          sources: appendSource(node.data?.sources, {
+            conversationId,
+            messageId: node.data?.messageId || null,
+            role: node.data?.messageRole || null,
+            preview: node.data?.messagePreview || '',
+            addedAt: now
+          })
+        }
+      };
+    });
+
+    const previousEdges = new Map(existingEdges.map((edge) => [edge.id, edge]));
+    nextEdges = (edges || []).map((edge) => {
+      const previous = previousEdges.get(edge.id);
+      if (previous) {
+        return {
+          ...edge,
+          data: {
+            ...edge.data,
+            sources: edge.data?.sources || previous.data?.sources || []
+          }
+        };
+      }
+      return {
+        ...edge,
+        data: {
+          ...edge.data,
+          sources: appendSource(edge.data?.sources, { conversationId, messageId: null, addedAt: now })
+        }
+      };
+    });
+  }
+
   const payload = {
     schemaVersion: SCHEMA_VERSION,
     conversationId: scope.type === 'conversation' ? conversationId : null,
     projectId: scope.projectId || null,
-    nodes,
-    edges,
+    nodes: nextNodes,
+    edges: nextEdges,
     metadata: {
       appliedDeltaMessageIds: [],
       focusNodeId: null,
@@ -121,8 +186,6 @@ export async function clearResearchGraph(conversationId) {
   if (!conversationId) return;
   const scope = await resolveResearchScope(conversationId);
   if (scope.type === 'project') {
-    // Clearing while attached clears the canonical project graph as expected,
-    // but keeps project membership intact.
     await saveResearchGraph(conversationId, [], [], {
       focusNodeId: null,
       selectedNodeId: null,
