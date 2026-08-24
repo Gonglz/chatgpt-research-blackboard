@@ -5,6 +5,8 @@
  * - fixed footprint for spatial stability
  * - title + type + compact keywords + highlight count only
  * - checkpoint is available through delayed hover preview / detail drawer
+ * - top/bottom ports carry structural backbone edges
+ * - left/right ports carry contextual lateral relations
  */
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
@@ -19,8 +21,16 @@ const TYPE_META = {
 const FONT_STACK = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
 const HOVER_DELAY_MS = 450;
 const POINTER_STABILITY_PX = 4;
+const HIDDEN_PORT_STYLE = {
+  width: 7,
+  height: 7,
+  opacity: 0,
+  border: 0,
+  background: 'transparent',
+  pointerEvents: 'none'
+};
 
-function ResearchNode({ data, selected }) {
+function ResearchNode({ id, data, selected }) {
   const meta = TYPE_META[data.type] || TYPE_META.analysis;
   const highlights = Array.isArray(data.highlights) ? data.highlights : [];
   const keywords = Array.isArray(data.keywords) ? data.keywords.slice(0, 3) : [];
@@ -54,6 +64,7 @@ function ResearchNode({ data, selected }) {
 
   const handlePointerEnter = (event) => {
     pointerRef.current = { x: event.clientX, y: event.clientY };
+    data?.onHoverChange?.(id);
     setPreviewVisible(false);
     schedulePreview();
   };
@@ -77,6 +88,7 @@ function ResearchNode({ data, selected }) {
   const handlePointerLeave = () => {
     clearPreviewTimer();
     pointerRef.current = null;
+    data?.onHoverChange?.(null);
     setPreviewVisible(false);
   };
 
@@ -104,7 +116,11 @@ function ResearchNode({ data, selected }) {
         overflow: 'visible'
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ background: meta.accent, width: 7, height: 7, border: '1px solid #fff' }} />
+      <Handle id="struct-target" type="target" position={Position.Top} style={{ background: meta.accent, width: 7, height: 7, border: '1px solid #fff' }} />
+      <Handle id="lateral-source-left" type="source" position={Position.Left} style={{ ...HIDDEN_PORT_STYLE, top: '45%' }} />
+      <Handle id="lateral-target-left" type="target" position={Position.Left} style={{ ...HIDDEN_PORT_STYLE, top: '56%' }} />
+      <Handle id="lateral-source-right" type="source" position={Position.Right} style={{ ...HIDDEN_PORT_STYLE, top: '45%' }} />
+      <Handle id="lateral-target-right" type="target" position={Position.Right} style={{ ...HIDDEN_PORT_STYLE, top: '56%' }} />
 
       {!farZoom ? (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', minHeight: 14, gap: 8 }}>
@@ -195,7 +211,7 @@ function ResearchNode({ data, selected }) {
         </div>
       ) : null}
 
-      <Handle type="source" position={Position.Bottom} style={{ background: meta.accent, width: 7, height: 7, border: '1px solid #fff' }} />
+      <Handle id="struct-source" type="source" position={Position.Bottom} style={{ background: meta.accent, width: 7, height: 7, border: '1px solid #fff' }} />
     </div>
   );
 }
