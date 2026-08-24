@@ -15,11 +15,12 @@ const TYPE_META = {
 
 function ResearchNode({ data, selected }) {
   const meta = TYPE_META[data.type] || TYPE_META.analysis;
+  const keywords = Array.isArray(data.keywords) ? data.keywords.slice(0, 3) : [];
 
   return (
     <div
       style={{
-        width: 190,
+        width: 196,
         borderRadius: 12,
         border: `${selected ? 3 : 1}px solid ${selected ? '#111827' : meta.accent}`,
         background: meta.bg,
@@ -39,12 +40,59 @@ function ResearchNode({ data, selected }) {
         ) : null}
       </div>
 
-      <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, lineHeight: 1.35, wordBreak: 'break-word' }}>
+      <div
+        title={data.title || 'Untitled research node'}
+        style={{
+          marginTop: 6,
+          fontSize: 13,
+          fontWeight: 700,
+          lineHeight: 1.35,
+          wordBreak: 'break-word',
+          display: '-webkit-box',
+          WebkitBoxOrient: 'vertical',
+          WebkitLineClamp: 3,
+          overflow: 'hidden'
+        }}
+      >
         {data.title || 'Untitled research node'}
       </div>
 
+      {keywords.length ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 7 }}>
+          {keywords.map((keyword) => (
+            <span
+              key={keyword}
+              style={{
+                maxWidth: 110,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                border: `1px solid ${meta.accent}33`,
+                background: '#ffffffaa',
+                borderRadius: 999,
+                padding: '2px 5px',
+                fontSize: 9,
+                lineHeight: 1.2,
+                color: '#475569'
+              }}
+            >
+              {keyword}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       {data.checkpoint ? (
-        <div style={{ marginTop: 7, fontSize: 11, lineHeight: 1.4, color: '#475569' }}>
+        <div
+          style={{
+            marginTop: 7,
+            paddingTop: 7,
+            borderTop: '1px solid rgba(148, 163, 184, 0.24)',
+            fontSize: 11,
+            lineHeight: 1.4,
+            color: '#475569'
+          }}
+        >
           {data.checkpoint.length > 110 ? `${data.checkpoint.slice(0, 110)}…` : data.checkpoint}
         </div>
       ) : null}
