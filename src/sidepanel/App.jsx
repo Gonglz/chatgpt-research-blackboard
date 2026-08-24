@@ -20,6 +20,111 @@ const IS_EMBEDDED = (() => {
 
 const MINIMAP_VISIBLE_KEY = IS_EMBEDDED ? 'cg:minimap:visible:embedded' : 'cg:minimap:visible:sidebar';
 
+function cleanAnchorText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+async function fallbackJumpToMessage(anchor) {
+  if (!anchor?.messageId && !anchor?.preview) return false;
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return false;
+    if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) return false;
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [anchor],
+      func: (payload) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const escapeValue = (value) => (
+          window.CSS?.escape
+            ? window.CSS.escape(value)
+            : String(value).replace(/["\\]/g, '\\$&')
+        );
+
+        const messageId = payload?.messageId || '';
+        const expectedRole = normalize(payload?.role).toLowerCase();
+        const preview = normalize(payload?.preview);
+
+        const findContainer = (node) => {
+          if (!node) return null;
+          if (node.matches?.('section[data-turn-id], article')) return node;
+          return node.closest?.('section[data-turn-id], article') || node;
+        };
+
+        const highlightAndScroll = (element, method) => {
+          const target = findContainer(element);
+          if (!target) return { success: false, method };
+
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          const previousOutline = target.style.outline;
+          const previousOutlineOffset = target.style.outlineOffset;
+          target.style.outline = '2px solid rgba(59, 130, 246, 0.75)';
+          target.style.outlineOffset = '4px';
+          window.setTimeout(() => {
+            target.style.outline = previousOutline;
+            target.style.outlineOffset = previousOutlineOffset;
+          }, 1400);
+          return { success: true, method };
+        };
+
+        if (messageId) {
+          const escaped = escapeValue(messageId);
+          const exact =
+            document.querySelector(`[data-message-id="${escaped}"]`) ||
+            document.querySelector(`[data-turn-id="${escaped}"]`) ||
+            document.querySelector(`[id="image-${escaped}"]`);
+          if (exact) return highlightAndScroll(exact, 'exact-id-fallback');
+        }
+
+        if (!preview) return { success: false, method: 'no-preview' };
+
+        const needle = preview.slice(0, 160);
+        const shortNeedle = needle.slice(0, Math.min(80, needle.length));
+        const containers = Array.from(document.querySelectorAll('section[data-turn-id], article'));
+        let best = null;
+        let bestScore = 0;
+
+        for (const container of containers) {
+          const roleNode = container.matches?.('[data-message-author-role]')
+            ? container
+            : container.querySelector?.('[data-message-author-role]');
+          const candidateRole = normalize(roleNode?.getAttribute?.('data-message-author-role')).toLowerCase();
+
+          if (expectedRole && candidateRole && expectedRole !== candidateRole) continue;
+
+          const text = normalize(container.innerText || container.textContent || '');
+          if (!text) continue;
+
+          let score = 0;
+          if (text.includes(needle)) score = 4;
+          else if (shortNeedle.length >= 24 && text.includes(shortNeedle)) score = 3;
+          else {
+            const candidatePrefix = text.slice(0, 80);
+            if (candidatePrefix.length >= 24 && needle.includes(candidatePrefix)) score = 2;
+          }
+
+          if (score > bestScore) {
+            best = container;
+            bestScore = score;
+          }
+        }
+
+        if (best) return highlightAndScroll(best, 'text-role-fallback');
+        return { success: false, method: 'not-found' };
+      }
+    });
+
+    const result = results?.[0]?.result;
+    console.log('[SidePanel] Fallback jump result:', result);
+    return !!result?.success;
+  } catch (error) {
+    console.warn('[SidePanel] Fallback jump failed:', error);
+    return false;
+  }
+}
+
 function App() {
   const [viewMode, setViewMode] = useState('graph');
 
@@ -163,19 +268,43 @@ function App() {
 
   const jumpToMessage = useCallback((messageId) => {
     if (!messageId) return;
+
+    const sourceNode = Array.isArray(conversationData?.nodes)
+      ? conversationData.nodes.find((node) => node?.id === messageId)
+      : null;
+    const anchor = {
+      messageId,
+      role: sourceNode?.role || null,
+      preview: cleanAnchorText(sourceNode?.content || '').slice(0, 180)
+    };
+
     console.log('[SidePanel] Sending SCROLL_TO_MESSAGE for:', messageId);
+
+    const runFallback = () => {
+      if (!anchor.preview) return;
+      void fallbackJumpToMessage(anchor);
+    };
 
     chrome.runtime.sendMessage({
       type: MESSAGE_TYPES.SCROLL_TO_MESSAGE,
       payload: { messageId }
     }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('[SidePanel] sendMessage error:', chrome.runtime.lastError);
-      } else {
-        console.log('[SidePanel] sendMessage response:', response);
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        console.error('[SidePanel] sendMessage error:', runtimeError);
+        runFallback();
+        return;
+      }
+
+      console.log('[SidePanel] sendMessage response:', response);
+
+      // Background wraps the content-script response as { success: true, data: ... }.
+      // Trigger the semantic fallback when the content script explicitly reports failure.
+      if (response?.success === false || response?.data?.success === false) {
+        runFallback();
       }
     });
-  }, []);
+  }, [conversationData]);
 
   const handleNodeClick = useCallback((nodeId, nodeData) => {
     console.log('[SidePanel] Node clicked:', nodeId, nodeData);
