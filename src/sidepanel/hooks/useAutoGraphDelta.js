@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadResearchGraph, saveResearchGraph } from '../utils/researchStore';
 import {
   applyGraphDelta,
-  extractGraphDeltaBlocks,
   parseGraphDelta,
   stripGraphDeltaBlocks
 } from '../utils/graphDelta';
@@ -13,6 +12,22 @@ function cleanText(value) {
 
 function normalizeRole(value) {
   return cleanText(value).toLowerCase();
+}
+
+/**
+ * Automatic execution is intentionally stricter than the general parser:
+ * only hidden HTML-comment transport blocks are trusted. Visible RGΔ code
+ * examples remain inert and can be used safely in normal discussion/debugging.
+ */
+function extractTransportBlocks(content) {
+  const text = String(content || '');
+  const blocks = [];
+  const re = /<!--\s*RGΔ\s*([\s\S]*?)-->/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    blocks.push(`RGΔ\n${match[1].trim()}`);
+  }
+  return [...new Set(blocks)];
 }
 
 function buildOrderedMessages(conversationData) {
@@ -49,8 +64,9 @@ function isAssistantRole(role) {
 }
 
 /**
- * Watches conversation data for assistant messages containing RGΔ blocks.
- * Each source message is applied at most once and recorded in graph metadata.
+ * Watches conversation data for assistant messages containing hidden RGΔ
+ * transport blocks. Each source message is applied at most once and recorded
+ * in graph metadata.
  */
 export function useAutoGraphDelta(conversationData) {
   const [revision, setRevision] = useState(0);
@@ -64,7 +80,7 @@ export function useAutoGraphDelta(conversationData) {
 
   const deltaMessages = useMemo(
     () => orderedMessages.filter((message) => (
-      isAssistantRole(message.role) && extractGraphDeltaBlocks(message.content).length > 0
+      isAssistantRole(message.role) && extractTransportBlocks(message.content).length > 0
     )),
     [orderedMessages]
   );
@@ -98,7 +114,7 @@ export function useAutoGraphDelta(conversationData) {
       for (const message of deltaMessages) {
         if (applied.has(message.id)) continue;
 
-        const blocks = extractGraphDeltaBlocks(message.content);
+        const blocks = extractTransportBlocks(message.content);
         let messageApplied = false;
 
         for (const block of blocks) {
@@ -159,7 +175,7 @@ export function useAutoGraphDelta(conversationData) {
         focusNodeId: state.focusNodeId
       });
       setRevision((value) => value + 1);
-      console.log('[ResearchBlackboard] Applied RGΔ:', {
+      console.log('[ResearchBlackboard] Applied hidden RGΔ:', {
         messages: appliedNow.length,
         changes,
         errors
