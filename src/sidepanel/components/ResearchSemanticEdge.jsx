@@ -4,16 +4,21 @@ import {
   EdgeLabelRenderer,
   Position,
   getBezierPath,
-  getSmoothStepPath,
   useStore
 } from '@xyflow/react';
 
 const FONT_STACK = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 88;
+const STRUCTURAL_PORT_SPACING = 15;
+const STRUCTURAL_PORT_MAX_OFFSET = 48;
 
 function relationOf(data, label) {
   return String(data?.relation || label || 'informs').trim().toLowerCase();
+}
+
+function edgeRelation(edge) {
+  return relationOf(edge?.data, edge?.label);
 }
 
 function nodeBounds(node) {
@@ -24,13 +29,27 @@ function nodeBounds(node) {
   return { x, y, width, height, cx: x + width / 2, cy: y + height / 2 };
 }
 
+function centeredPortOffset(index, count) {
+  if (count <= 1 || index < 0) return 0;
+  const raw = (index - (count - 1) / 2) * STRUCTURAL_PORT_SPACING;
+  return Math.max(-STRUCTURAL_PORT_MAX_OFFSET, Math.min(STRUCTURAL_PORT_MAX_OFFSET, raw));
+}
+
+function visualNodeX(node, fallback = 0) {
+  return node ? nodeBounds(node).cx : fallback;
+}
+
 /**
  * Canonical semantic direction for deepens is child -> parent. The edge renderer
  * intentionally draws the opposite visual direction (parent top -> child down)
  * so the canvas reads from broad concepts toward deeper concepts.
  *
+ * Backbone edges use restrained vertical Bezier curves with per-sibling port
+ * offsets. This keeps structural edges visually tree-like while preventing the
+ * long shared horizontal/vertical "plumbing" produced by orthogonal routing.
+ *
  * Non-structural relations are contextual: they stay hidden until one of their
- * endpoint nodes is selected, then appear as lighter left/right curves.
+ * endpoint nodes is selected, then appear as lighter, more curved side links.
  */
 function ResearchSemanticEdge({
   id,
@@ -42,13 +61,15 @@ function ResearchSemanticEdge({
   markerStart
 }) {
   const relation = relationOf(data, label);
-  const sourceNode = useStore((state) => state.nodes?.find((node) => node.id === source));
-  const targetNode = useStore((state) => state.nodes?.find((node) => node.id === target));
+  const allNodes = useStore((state) => state.nodes || []);
+  const allEdges = useStore((state) => state.edges || []);
   const selectedNodeId = useStore((state) => {
     const selected = state.nodes?.find((node) => node.selected);
     return selected?.id || null;
   });
 
+  const sourceNode = allNodes.find((node) => node.id === source);
+  const targetNode = allNodes.find((node) => node.id === target);
   if (!sourceNode || !targetNode) return null;
 
   const connectedToSelection = !!selectedNodeId && (source === selectedNodeId || target === selectedNodeId);
@@ -57,15 +78,40 @@ function ResearchSemanticEdge({
 
   if (relation === 'deepens') {
     // Canonical: child(source) -> parent(target). Visual: parent -> child.
-    const [path] = getSmoothStepPath({
-      sourceX: targetBox.cx,
+    // Fan siblings out from distinct points along the parent's bottom edge so
+    // separate relationships do not share a long orthogonal trunk.
+    const siblingsFromParent = allEdges
+      .filter((edge) => edgeRelation(edge) === 'deepens' && edge.target === target)
+      .slice()
+      .sort((a, b) => {
+        const ax = visualNodeX(allNodes.find((node) => node.id === a.source));
+        const bx = visualNodeX(allNodes.find((node) => node.id === b.source));
+        return ax - bx || String(a.id || '').localeCompare(String(b.id || ''));
+      });
+    const parentIndex = siblingsFromParent.findIndex((edge) => edge.id === id);
+    const parentOffset = centeredPortOffset(parentIndex, siblingsFromParent.length);
+
+    // If one child has multiple structural parents, also give those incoming
+    // visual paths separate top ports rather than stacking them exactly.
+    const parentsForChild = allEdges
+      .filter((edge) => edgeRelation(edge) === 'deepens' && edge.source === source)
+      .slice()
+      .sort((a, b) => {
+        const ax = visualNodeX(allNodes.find((node) => node.id === a.target));
+        const bx = visualNodeX(allNodes.find((node) => node.id === b.target));
+        return ax - bx || String(a.id || '').localeCompare(String(b.id || ''));
+      });
+    const childIndex = parentsForChild.findIndex((edge) => edge.id === id);
+    const childOffset = centeredPortOffset(childIndex, parentsForChild.length);
+
+    const [path] = getBezierPath({
+      sourceX: targetBox.cx + parentOffset,
       sourceY: targetBox.y + targetBox.height,
       sourcePosition: Position.Bottom,
-      targetX: sourceBox.cx,
+      targetX: sourceBox.cx + childOffset,
       targetY: sourceBox.y,
       targetPosition: Position.Top,
-      borderRadius: 9,
-      offset: 24
+      curvature: 0.18
     });
 
     return (
@@ -76,8 +122,8 @@ function ResearchSemanticEdge({
         markerEnd={markerEnd}
         style={{
           stroke: connectedToSelection ? '#64748b' : '#94a3b8',
-          strokeWidth: connectedToSelection ? 1.8 : 1.25,
-          opacity: selectedNodeId ? (connectedToSelection ? 0.94 : 0.38) : 0.58
+          strokeWidth: connectedToSelection ? 1.8 : 1.3,
+          opacity: selectedNodeId ? (connectedToSelection ? 0.94 : 0.34) : 0.62
         }}
       />
     );
@@ -99,7 +145,7 @@ function ResearchSemanticEdge({
     targetX,
     targetY: targetBox.cy,
     targetPosition,
-    curvature: 0.28
+    curvature: 0.34
   });
 
   const dashed = relation === 'contradicts';
@@ -113,8 +159,8 @@ function ResearchSemanticEdge({
         markerEnd={markerEnd}
         style={{
           stroke: '#64748b',
-          strokeWidth: 1.35,
-          opacity: 0.86,
+          strokeWidth: 1.25,
+          opacity: 0.78,
           strokeDasharray: dashed ? '5 4' : undefined
         }}
       />
