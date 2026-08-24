@@ -1,10 +1,10 @@
 /**
  * Minimal top toolbar (sidepanel only).
  *
- * User feedback:
- * - Remove verbose title/stats ("ChatGPT Graph", branch counts, QA counts)
- * - Keep it clean: buttons only
- * - Must be responsive at narrow widths (no clipped buttons)
+ * Views:
+ * - Graph: raw ChatGPT conversation graph
+ * - Tree: git-style conversation branches
+ * - Research: semantic Research Blackboard
  */
 
 import React from 'react';
@@ -26,8 +26,8 @@ export default function Header({
           <button
             className={'view-toggle-btn' + (viewMode === 'graph' ? ' active' : '')}
             onClick={() => onViewModeChange?.('graph')}
-            title="Graph"
-            aria-label="Graph"
+            title="Conversation graph"
+            aria-label="Conversation graph"
             type="button"
           >
             <img className="toolbar-icon" src={iconUrl('graph.svg')} alt="Graph" />
@@ -35,11 +35,20 @@ export default function Header({
           <button
             className={'view-toggle-btn' + (viewMode === 'tree' ? ' active' : '')}
             onClick={() => onViewModeChange?.('tree')}
-            title="Tree"
-            aria-label="Tree"
+            title="Conversation tree"
+            aria-label="Conversation tree"
             type="button"
           >
             <img className="toolbar-icon" src={iconUrl('tree.svg')} alt="Tree" />
+          </button>
+          <button
+            className={'view-toggle-btn' + (viewMode === 'research' ? ' active' : '')}
+            onClick={() => onViewModeChange?.('research')}
+            title="Research Blackboard"
+            aria-label="Research Blackboard"
+            type="button"
+          >
+            <span aria-hidden="true" style={{ fontSize: 14, lineHeight: 1 }}>⌘</span>
           </button>
         </div>
       </div>
