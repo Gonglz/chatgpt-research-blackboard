@@ -1,9 +1,11 @@
 /**
- * Research Blackboard v0.1
+ * Research Blackboard — canvas-first semantic research graph.
  *
- * Semantic graph layered on top of the current ChatGPT conversation.
- * The MVP keeps the user in normal chat while turning selected messages into
- * compact research nodes with durable message anchors.
+ * Design rules:
+ * - the canvas owns almost all persistent space
+ * - nodes stay compact and fixed-size
+ * - details are progressive disclosure via delayed hover + overlay drawer
+ * - manual pinning/settings are low-frequency popovers from a narrow rail
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -22,6 +24,17 @@ import { clearResearchGraph, loadResearchGraph, saveResearchGraph } from '../uti
 const nodeTypes = { researchNode: ResearchNode };
 const RELATIONS = ['deepens', 'compares', 'supports', 'contradicts', 'informs'];
 const NODE_TYPES = ['analysis', 'comparison', 'judgment', 'question'];
+const DETAIL_PLACEMENT_KEY = 'researchBlackboard:detailPlacement';
+const MINIMAP_PREF_KEY = 'researchBlackboard:minimapPreference';
+const FONT_STACK = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+
+const TYPE_META = {
+  analysis: { label: 'Analysis', accent: '#2563eb' },
+  comparison: { label: 'Compare', accent: '#7c3aed' },
+  judgment: { label: 'Judgment', accent: '#059669' },
+  question: { label: 'Question', accent: '#d97706' }
+};
+
 const GENERIC_KEYWORDS = new Set([
   '问题', '分析', '比较', '对比', '判断', '结论', '情况', '内容', '这个', '那个',
   '可以', '应该', '需要', '现在', '这里', '一个', '一种', '方面', '东西', 'ChatGPT',
@@ -207,6 +220,7 @@ function normalizeStoredNode(node, source) {
       keywords: Array.isArray(existingData.keywords) && existingData.keywords.length
         ? existingData.keywords
         : inferKeywords(source?.rawContent || existingData.messagePreview || '', title),
+      highlights: Array.isArray(existingData.highlights) ? existingData.highlights : [],
       messageRole: existingData.messageRole || source?.role || null,
       messagePreview: existingData.messagePreview || (source ? truncate(source.content, 180) : ''),
       messageTail: existingData.messageTail || (source ? source.content.slice(-180) : ''),
@@ -215,6 +229,323 @@ function normalizeStoredNode(node, source) {
       messageRoleIndex: Number.isInteger(existingData.messageRoleIndex) ? existingData.messageRoleIndex : (source?.roleIndex ?? -1)
     }
   };
+}
+
+function readLocalPreference(key, allowed, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return allowed.includes(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function RailButton({ active = false, title, children, onClick }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      style={{
+        width: 32,
+        height: 32,
+        borderRadius: 8,
+        border: active ? '1px solid #94a3b8' : '1px solid transparent',
+        background: active ? '#f1f5f9' : 'rgba(255,255,255,.92)',
+        color: active ? '#111827' : '#475569',
+        fontFamily: FONT_STACK,
+        fontSize: 15,
+        fontWeight: 600,
+        display: 'grid',
+        placeItems: 'center',
+        cursor: 'pointer',
+        boxShadow: active ? '0 1px 3px rgba(15,23,42,.08)' : 'none'
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function HighlightList({ highlights, onJump }) {
+  if (!highlights.length) {
+    return (
+      <div style={{ padding: '12px 2px', fontSize: 12, lineHeight: '18px', color: '#94a3b8' }}>
+        No saved highlights yet. Select text in a ChatGPT answer and choose ★ Save.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+      {highlights.map((highlight) => (
+        <div
+          key={highlight.id || `${highlight.messageId}:${highlight.quote}`}
+          style={{
+            border: '1px solid #e2e8f0',
+            borderRadius: 9,
+            background: '#f8fafc',
+            padding: '8px 9px'
+          }}
+        >
+          <div style={{ fontSize: 12.5, lineHeight: '18px', color: '#334155' }}>
+            ★ “{highlight.quote || ''}”
+          </div>
+          {highlight.messageId ? (
+            <button
+              type="button"
+              onClick={() => onJump?.(highlight)}
+              style={{
+                marginTop: 5,
+                border: 0,
+                background: 'transparent',
+                padding: 0,
+                fontSize: 11.5,
+                lineHeight: '16px',
+                color: '#2563eb',
+                cursor: 'pointer',
+                fontFamily: FONT_STACK
+              }}
+            >
+              ↗ Source
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetailSurface({
+  node,
+  placement,
+  selectedEdges,
+  nodes,
+  sourceMap,
+  editMode,
+  setEditMode,
+  close,
+  patchNode,
+  autoTitle,
+  deleteNode,
+  jumpToNode,
+  jumpToHighlight,
+  linkRelation,
+  setLinkRelation,
+  linkTargetId,
+  setLinkTargetId,
+  createRelation,
+  deleteEdge
+}) {
+  if (!node) return null;
+  const meta = TYPE_META[node.data?.type] || TYPE_META.analysis;
+  const highlights = Array.isArray(node.data?.highlights) ? node.data.highlights : [];
+  const keywords = Array.isArray(node.data?.keywords) ? node.data.keywords : [];
+  const bottom = placement === 'bottom';
+
+  const baseStyle = bottom
+    ? {
+        left: 52,
+        right: 10,
+        bottom: 10,
+        height: 'min(340px, 43%)'
+      }
+    : {
+        left: 52,
+        top: 10,
+        bottom: 10,
+        width: 'clamp(300px, 38%, 400px)'
+      };
+
+  const selectedSource = sourceMap.get(node.data?.messageId);
+
+  return (
+    <section
+      aria-label="Research node detail"
+      style={{
+        position: 'absolute',
+        ...baseStyle,
+        zIndex: 40,
+        display: 'flex',
+        flexDirection: 'column',
+        minWidth: 0,
+        border: '1px solid #dbe3ee',
+        borderRadius: 12,
+        background: 'rgba(255,255,255,.985)',
+        boxShadow: '0 18px 45px rgba(15,23,42,.20)',
+        overflow: 'hidden',
+        fontFamily: FONT_STACK,
+        color: '#111827'
+      }}
+    >
+      <div style={{ flex: '0 0 auto', padding: '11px 12px 9px', borderBottom: '1px solid #e2e8f0' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 10.5, lineHeight: '14px', color: meta.accent, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.035em' }}>
+              {meta.label}
+            </div>
+            <div style={{ marginTop: 2, fontSize: 16, lineHeight: '22px', fontWeight: 600, color: '#111827' }}>
+              {node.data?.title || 'Untitled research node'}
+            </div>
+            {keywords.length ? (
+              <div style={{ marginTop: 4, fontSize: 12, lineHeight: '16px', color: '#64748b' }}>
+                {keywords.slice(0, 5).join(' · ')}
+              </div>
+            ) : null}
+          </div>
+          <button type="button" onClick={close} style={iconButtonStyle} title="Close detail" aria-label="Close detail">×</button>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8 }}>
+          {node.data?.messageId ? (
+            <button type="button" onClick={jumpToNode} style={quietButtonStyle}>↗ Source</button>
+          ) : null}
+          <button type="button" onClick={() => setEditMode((value) => !value)} style={quietButtonStyle}>
+            {editMode ? 'Done' : 'Edit'}
+          </button>
+        </div>
+      </div>
+
+      {editMode ? (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+          <label style={labelStyle}>Type</label>
+          <select
+            value={node.data?.type || 'analysis'}
+            onChange={(event) => {
+              const nextType = event.target.value;
+              const nextTitle = !node.data?.titleEdited && selectedSource
+                ? inferNodeTitle(selectedSource.rawContent, selectedSource.role, nextType)
+                : node.data?.title;
+              patchNode({
+                type: nextType,
+                typeEdited: true,
+                title: nextTitle,
+                keywords: selectedSource ? inferKeywords(selectedSource.rawContent, nextTitle) : node.data?.keywords
+              });
+            }}
+            style={inputStyle}
+          >
+            {NODE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+          </select>
+
+          <label style={labelStyle}>Title</label>
+          <input
+            value={node.data?.title || ''}
+            onChange={(event) => patchNode({ title: event.target.value, titleEdited: true, titleSource: 'manual' })}
+            style={inputStyle}
+          />
+
+          <label style={labelStyle}>Checkpoint</label>
+          <textarea
+            value={node.data?.checkpoint || ''}
+            onChange={(event) => patchNode({ checkpoint: event.target.value, checkpointEdited: true })}
+            rows={4}
+            style={{ ...inputStyle, resize: 'vertical', lineHeight: '19px' }}
+          />
+
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+            <button type="button" onClick={autoTitle} style={quietButtonStyle}>Auto title</button>
+            <button type="button" onClick={deleteNode} style={{ ...quietButtonStyle, color: '#b91c1c' }}>Delete node</button>
+          </div>
+
+          <label style={labelStyle}>Create relation</label>
+          <div style={{ display: 'grid', gridTemplateColumns: '110px minmax(0,1fr)', gap: 6 }}>
+            <select value={linkRelation} onChange={(event) => setLinkRelation(event.target.value)} style={inputStyle}>
+              {RELATIONS.map((relation) => <option key={relation} value={relation}>{relation}</option>)}
+            </select>
+            <select value={linkTargetId} onChange={(event) => setLinkTargetId(event.target.value)} style={inputStyle}>
+              <option value="">Target node…</option>
+              {nodes.filter((candidate) => candidate.id !== node.id).map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>{truncate(candidate.data?.title || candidate.id, 50)}</option>
+              ))}
+            </select>
+          </div>
+          <button type="button" onClick={createRelation} disabled={!linkTargetId} style={{ ...primaryButtonStyle, marginTop: 6, opacity: linkTargetId ? 1 : .45 }}>
+            Create relation
+          </button>
+
+          {selectedEdges.length ? (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12, lineHeight: '16px', fontWeight: 600, color: '#475569', marginBottom: 4 }}>Relations</div>
+              {selectedEdges.map((edge) => {
+                const otherId = edge.source === node.id ? edge.target : edge.source;
+                const other = nodes.find((candidate) => candidate.id === otherId);
+                return (
+                  <div key={edge.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '4px 0', fontSize: 11.5, lineHeight: '16px' }}>
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#475569' }}>
+                      {edge.source === node.id ? '→' : '←'} {edge.data?.relation || edge.label || 'informs'} · {other?.data?.title || otherId}
+                    </span>
+                    <button type="button" onClick={() => deleteEdge(edge.id)} style={tinyButtonStyle}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : bottom ? (
+        <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(240px,.9fr) minmax(0,1.25fr)', gap: 0 }}>
+          <div style={{ minWidth: 0, overflowY: 'auto', padding: 12, borderRight: '1px solid #e2e8f0' }}>
+            <div style={sectionTitleStyle}>Checkpoint</div>
+            <div style={{ fontSize: 14, lineHeight: '20px', color: '#334155' }}>
+              {node.data?.checkpoint || 'No checkpoint yet.'}
+            </div>
+            {selectedEdges.length ? (
+              <div style={{ marginTop: 14 }}>
+                <div style={sectionTitleStyle}>Relations</div>
+                {selectedEdges.map((edge) => {
+                  const otherId = edge.source === node.id ? edge.target : edge.source;
+                  const other = nodes.find((candidate) => candidate.id === otherId);
+                  return (
+                    <div key={edge.id} style={{ marginTop: 5, fontSize: 12, lineHeight: '17px', color: '#64748b' }}>
+                      {edge.source === node.id ? '→' : '←'} {edge.data?.relation || edge.label || 'informs'} · {other?.data?.title || otherId}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+          <div style={{ minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', padding: 12 }}>
+            <div style={{ ...sectionTitleStyle, flex: '0 0 auto' }}>Highlights <span style={{ color: '#94a3b8' }}>★ {highlights.length}</span></div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 3 }}>
+              <HighlightList highlights={highlights} onJump={jumpToHighlight} />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: 12 }}>
+          <div style={{ flex: '0 0 auto' }}>
+            <div style={sectionTitleStyle}>Checkpoint</div>
+            <div style={{ fontSize: 14, lineHeight: '20px', color: '#334155' }}>
+              {node.data?.checkpoint || 'No checkpoint yet.'}
+            </div>
+          </div>
+
+          <div style={{ flex: '1 1 auto', minHeight: 110, display: 'flex', flexDirection: 'column', marginTop: 14 }}>
+            <div style={{ ...sectionTitleStyle, flex: '0 0 auto' }}>Highlights <span style={{ color: '#94a3b8' }}>★ {highlights.length}</span></div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 3 }}>
+              <HighlightList highlights={highlights} onJump={jumpToHighlight} />
+            </div>
+          </div>
+
+          {selectedEdges.length ? (
+            <div style={{ flex: '0 0 auto', marginTop: 12, maxHeight: 120, overflowY: 'auto' }}>
+              <div style={sectionTitleStyle}>Relations</div>
+              {selectedEdges.map((edge) => {
+                const otherId = edge.source === node.id ? edge.target : edge.source;
+                const other = nodes.find((candidate) => candidate.id === otherId);
+                return (
+                  <div key={edge.id} style={{ marginTop: 4, fontSize: 12, lineHeight: '17px', color: '#64748b' }}>
+                    {edge.source === node.id ? '→' : '←'} {edge.data?.relation || edge.label || 'informs'} · {other?.data?.title || otherId}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
@@ -228,7 +559,15 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
   const [linkTargetId, setLinkTargetId] = useState('');
   const [linkRelation, setLinkRelation] = useState('informs');
   const [status, setStatus] = useState('');
+  const [manualOpen, setManualOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [canvasWidth, setCanvasWidth] = useState(0);
+  const [detailPlacement, setDetailPlacement] = useState(() => readLocalPreference(DETAIL_PLACEMENT_KEY, ['auto', 'left', 'bottom'], 'auto'));
+  const [miniMapPreference, setMiniMapPreference] = useState(() => readLocalPreference(MINIMAP_PREF_KEY, ['auto', 'show', 'hide'], 'auto'));
+
   const loadedConversationRef = useRef(null);
+  const canvasRef = useRef(null);
 
   const allSourceMessages = useMemo(() => buildSourceMessages(conversationData), [conversationData]);
   const sourceMessages = useMemo(() => allSourceMessages.slice(-80), [allSourceMessages]);
@@ -247,16 +586,30 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
       if (cancelled) return;
       const freshSources = buildSourceMessages(conversationData);
       const freshSourceMap = new Map(freshSources.map((message) => [message.id, message]));
-      setNodes((graph.nodes || []).map((node) => normalizeStoredNode(node, freshSourceMap.get(node?.data?.messageId))));
+      const normalized = (graph.nodes || []).map((node) => normalizeStoredNode(node, freshSourceMap.get(node?.data?.messageId)));
+      setNodes(normalized);
       setEdges(graph.edges || []);
+      const requestedSelection = graph.metadata?.selectedNodeId || null;
+      setSelectedNodeId(normalized.some((node) => node.id === requestedSelection) ? requestedSelection : null);
       loadedConversationRef.current = conversationId;
-      setStatus(graph.nodes?.length ? 'Local graph loaded' : 'Start by pinning a message');
+      setStatus(graph.nodes?.length ? 'Local graph loaded' : 'Waiting for research nodes');
     })();
 
     return () => {
       cancelled = true;
     };
   }, [conversationId, setNodes, setEdges]);
+
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries?.[0]?.contentRect?.width || 0;
+      setCanvasWidth(width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!sourceMessages.length) {
@@ -270,7 +623,6 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
 
   useEffect(() => {
     if (!conversationId || loadedConversationRef.current !== conversationId) return undefined;
-
     const timer = setTimeout(() => {
       saveResearchGraph(conversationId, nodes, edges)
         .then(() => setStatus('Saved locally'))
@@ -279,9 +631,21 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
           setStatus('Save failed');
         });
     }, 250);
-
     return () => clearTimeout(timer);
   }, [conversationId, nodes, edges]);
+
+  useEffect(() => {
+    try { localStorage.setItem(DETAIL_PLACEMENT_KEY, detailPlacement); } catch { /* ignore */ }
+  }, [detailPlacement]);
+
+  useEffect(() => {
+    try { localStorage.setItem(MINIMAP_PREF_KEY, miniMapPreference); } catch { /* ignore */ }
+  }, [miniMapPreference]);
+
+  useEffect(() => {
+    setEditMode(false);
+    setLinkTargetId('');
+  }, [selectedNodeId]);
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) || null,
@@ -303,6 +667,43 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
     [selectedSource, suggestedTitle]
   );
 
+  const selectedEdges = useMemo(() => {
+    if (!selectedNodeId) return [];
+    return edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId);
+  }, [edges, selectedNodeId]);
+
+  const resolvedPlacement = detailPlacement === 'auto'
+    ? (canvasWidth >= 700 ? 'left' : 'bottom')
+    : detailPlacement;
+
+  const showMiniMap = miniMapPreference === 'show'
+    || (miniMapPreference === 'auto' && nodes.length >= 30);
+
+  const displayNodes = useMemo(
+    () => nodes.map((node) => ({ ...node, selected: node.id === selectedNodeId })),
+    [nodes, selectedNodeId]
+  );
+
+  const displayEdges = useMemo(() => edges.map((edge) => {
+    const connected = !!selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId);
+    const relation = edge.data?.relation || edge.label || 'informs';
+    const selectedStyle = connected
+      ? { stroke: '#64748b', strokeWidth: 1.8, opacity: .92 }
+      : { stroke: '#94a3b8', strokeWidth: 1.2, opacity: selectedNodeId ? .12 : .34 };
+    if (relation === 'contradicts') selectedStyle.strokeDasharray = '5 4';
+    if (relation === 'informs' && !connected) selectedStyle.opacity = selectedNodeId ? .08 : .24;
+
+    return {
+      ...edge,
+      label: connected ? relation : undefined,
+      style: { ...(edge.style || {}), ...selectedStyle },
+      labelStyle: { fill: '#64748b', fontSize: 10.5, fontFamily: FONT_STACK },
+      labelBgStyle: { fill: '#fff', fillOpacity: .9 },
+      labelBgPadding: [3, 2],
+      labelBgBorderRadius: 4
+    };
+  }), [edges, selectedNodeId]);
+
   const makeJumpAnchor = useCallback((node) => {
     const messageId = node?.data?.messageId;
     if (!messageId) return null;
@@ -315,6 +716,20 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
       textLength: source?.textLength || node.data.messageTextLength || 0,
       messageIndex: source?.messageIndex ?? node.data.messageIndex ?? -1,
       roleIndex: source?.roleIndex ?? node.data.messageRoleIndex ?? -1
+    };
+  }, [sourceMap]);
+
+  const makeHighlightAnchor = useCallback((highlight) => {
+    if (!highlight?.messageId) return null;
+    const source = sourceMap.get(highlight.messageId);
+    return {
+      messageId: highlight.messageId,
+      role: source?.role || highlight.messageRole || 'assistant',
+      preview: source?.content.slice(0, 220) || highlight.messagePreview || '',
+      tail: source?.content.slice(-180) || highlight.messageTail || '',
+      textLength: source?.textLength || highlight.messageTextLength || 0,
+      messageIndex: source?.messageIndex ?? -1,
+      roleIndex: source?.roleIndex ?? -1
     };
   }, [sourceMap]);
 
@@ -340,6 +755,7 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
         titleEdited: !!cleanText(draftTitle),
         keywords,
         checkpoint: '',
+        highlights: [],
         messageId: source?.id || null,
         messageRole: source?.role || null,
         messagePreview: source ? truncate(source.content, 180) : '',
@@ -353,6 +769,7 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
     setNodes((current) => current.concat(node));
     setSelectedNodeId(id);
     setDraftTitle('');
+    setManualOpen(false);
     setStatus(source ? 'Pinned message with auto summary' : 'Created research node');
   }, [draftTitle, draftType, nodes.length, setNodes, sourceMessageId, sourceMap]);
 
@@ -367,10 +784,25 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
   }, [setEdges]);
 
   const handleNodeClick = useCallback((event, node) => {
+    event?.stopPropagation?.();
     setSelectedNodeId(node.id);
+    setManualOpen(false);
+    setSettingsOpen(false);
+  }, []);
+
+  const handleNodeDoubleClick = useCallback((event, node) => {
+    event?.stopPropagation?.();
     const anchor = makeJumpAnchor(node);
     if (anchor) onJumpToMessage?.(anchor);
   }, [makeJumpAnchor, onJumpToMessage]);
+
+  const closeDetail = useCallback(() => {
+    setSelectedNodeId(null);
+    setEditMode(false);
+    if (conversationId) {
+      saveResearchGraph(conversationId, nodes, edges, { selectedNodeId: null }).catch(() => {});
+    }
+  }, [conversationId, nodes, edges]);
 
   const patchSelectedNode = useCallback((patch) => {
     if (!selectedNodeId) return;
@@ -427,221 +859,192 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
     setNodes([]);
     setEdges([]);
     setSelectedNodeId(null);
+    setManualOpen(false);
+    setSettingsOpen(false);
     setStatus('Local graph cleared');
   }, [conversationId, setNodes, setEdges]);
-
-  const selectedEdges = useMemo(() => {
-    if (!selectedNodeId) return [];
-    return edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId);
-  }, [edges, selectedNodeId]);
 
   if (!conversationData) {
     return <div className="empty-state"><h2>No Conversation Loaded</h2><p>Open a ChatGPT conversation first.</p></div>;
   }
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#f8fafc' }}>
-      <div style={{ padding: '10px 12px', borderBottom: '1px solid #e2e8f0', background: '#fff', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>Research Blackboard</div>
-            <div style={{ fontSize: 10, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {conversationData.title}
-            </div>
-          </div>
-          <button type="button" onClick={resetGraph} style={smallButtonStyle}>Clear</button>
+    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', background: '#f8fafc', fontFamily: FONT_STACK }}>
+      <div
+        style={{
+          height: 38,
+          flex: '0 0 38px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 9,
+          padding: '0 11px',
+          borderBottom: '1px solid #e2e8f0',
+          background: '#fff'
+        }}
+      >
+        <div style={{ fontSize: 13.5, lineHeight: '18px', fontWeight: 650, color: '#111827', whiteSpace: 'nowrap' }}>
+          Research Blackboard
         </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '110px minmax(0, 1fr)', gap: 6 }}>
-          <select value={draftType} onChange={(event) => setDraftType(event.target.value)} style={inputStyle}>
-            {NODE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-          <input
-            value={draftTitle}
-            onChange={(event) => setDraftTitle(event.target.value)}
-            placeholder={suggestedTitle ? `Auto: ${suggestedTitle}` : 'Node title (optional)'}
-            style={inputStyle}
-          />
+        <div style={{ minWidth: 0, flex: 1, fontSize: 11.5, lineHeight: '16px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {conversationData.title}
         </div>
-
-        <select
-          value={sourceMessageId}
-          onChange={(event) => setSourceMessageId(event.target.value)}
-          style={{ ...inputStyle, marginTop: 6, width: '100%' }}
-        >
-          <option value="">No message anchor</option>
-          {sourceMessages.map((message) => (
-            <option key={message.id} value={message.id}>
-              {message.role === 'user' ? 'You' : 'GPT'} · {truncate(message.content, 88)}
-            </option>
-          ))}
-        </select>
-
-        <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
-          <button type="button" onClick={addResearchNode} style={primaryButtonStyle}>+ Pin as node</button>
-          <span style={{ fontSize: 10, color: '#64748b', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {selectedSource
-              ? `${suggestedTitle}${suggestedKeywords.length ? ` · ${suggestedKeywords.join(' / ')}` : ''}`
-              : 'Manual node'}
-          </span>
+        <div style={{ fontSize: 10.5, lineHeight: '14px', color: '#94a3b8', whiteSpace: 'nowrap' }}>
+          {nodes.length} · {edges.length}
         </div>
       </div>
 
-      <div style={{ flex: '1 1 55%', minHeight: 220, position: 'relative', borderBottom: '1px solid #e2e8f0' }}>
+      <div ref={canvasRef} style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden' }}>
         {nodes.length === 0 ? (
-          <div className="empty-state" style={{ position: 'absolute' }}>
+          <div className="empty-state" style={{ position: 'absolute', zIndex: 1 }}>
             <div style={{ fontSize: 30, marginBottom: 8 }}>⌘</div>
-            <h2 style={{ fontSize: 15 }}>Pin the first research node</h2>
-            <p style={{ maxWidth: 260 }}>Choose a message above. The blackboard will generate a compact title and keywords instead of copying the raw message.</p>
+            <h2 style={{ fontSize: 15 }}>Research graph is empty</h2>
+            <p style={{ maxWidth: 280 }}>Keep chatting with the sidecar open, or use + to create a manual node.</p>
           </div>
         ) : null}
+
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={displayNodes}
+          edges={displayEdges}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onNodeClick={handleNodeClick}
-          onPaneClick={() => setSelectedNodeId(null)}
+          onNodeDoubleClick={handleNodeDoubleClick}
+          onPaneClick={closeDetail}
           fitView
-          fitViewOptions={{ padding: 0.22 }}
+          fitViewOptions={{ padding: 0.18 }}
           defaultEdgeOptions={{ type: 'smoothstep' }}
           minZoom={0.25}
           maxZoom={1.8}
+          style={{ background: '#f8fafc' }}
         >
-          <Background gap={20} size={1} />
+          <Background gap={22} size={1} color="#dbe3ee" />
           <Controls showInteractive={false} />
-          <MiniMap pannable zoomable />
+          {showMiniMap ? <MiniMap pannable zoomable position="bottom-right" /> : null}
         </ReactFlow>
-      </div>
 
-      <div style={{ flex: '0 0 auto', maxHeight: '42%', overflow: 'auto', padding: 12, background: '#fff' }}>
-        {selectedNode ? (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <strong style={{ fontSize: 12 }}>Node inspector</strong>
-              <div style={{ display: 'flex', gap: 5 }}>
-                <button type="button" onClick={autoSummarizeSelectedNode} style={smallButtonStyle}>Auto title</button>
-                <button type="button" onClick={deleteSelectedNode} style={{ ...smallButtonStyle, color: '#b91c1c' }}>Delete</button>
-              </div>
-            </div>
-
-            <label style={labelStyle}>Type</label>
-            <select
-              value={selectedNode.data.type || 'analysis'}
-              onChange={(event) => {
-                const nextType = event.target.value;
-                const source = sourceMap.get(selectedNode.data.messageId);
-                const nextTitle = !selectedNode.data.titleEdited && source
-                  ? inferNodeTitle(source.rawContent, source.role, nextType)
-                  : selectedNode.data.title;
-                patchSelectedNode({
-                  type: nextType,
-                  title: nextTitle,
-                  keywords: source ? inferKeywords(source.rawContent, nextTitle) : selectedNode.data.keywords
-                });
-              }}
-              style={{ ...inputStyle, width: '100%' }}
-            >
-              {NODE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-            </select>
-
-            <label style={labelStyle}>Title</label>
-            <input
-              value={selectedNode.data.title || ''}
-              onChange={(event) => patchSelectedNode({ title: event.target.value, titleEdited: true, titleSource: 'manual' })}
-              style={{ ...inputStyle, width: '100%' }}
-            />
-
-            {Array.isArray(selectedNode.data.keywords) && selectedNode.data.keywords.length ? (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
-                {selectedNode.data.keywords.map((keyword) => (
-                  <span key={keyword} style={keywordChipStyle}>{keyword}</span>
-                ))}
-              </div>
-            ) : null}
-
-            <label style={labelStyle}>Checkpoint</label>
-            <textarea
-              value={selectedNode.data.checkpoint || ''}
-              onChange={(event) => patchSelectedNode({ checkpoint: event.target.value })}
-              placeholder="One short conclusion / open question"
-              rows={3}
-              style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.35 }}
-            />
-
-            {selectedNode.data.messageId ? (
-              <div style={{ marginTop: 8, padding: 8, borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                <div style={{ fontSize: 10, color: '#64748b' }}>Chat anchor · {selectedNode.data.messageRole || 'message'}</div>
-                <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.35 }}>{selectedNode.data.messagePreview || selectedNode.data.messageId}</div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const anchor = makeJumpAnchor(selectedNode);
-                    if (anchor) onJumpToMessage?.(anchor);
-                  }}
-                  style={{ ...smallButtonStyle, marginTop: 7 }}
-                >
-                  Jump to source
-                </button>
-              </div>
-            ) : null}
-
-            <label style={labelStyle}>Link this node</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '110px minmax(0, 1fr)', gap: 6 }}>
-              <select value={linkRelation} onChange={(event) => setLinkRelation(event.target.value)} style={inputStyle}>
-                {RELATIONS.map((relation) => <option key={relation} value={relation}>{relation}</option>)}
-              </select>
-              <select value={linkTargetId} onChange={(event) => setLinkTargetId(event.target.value)} style={inputStyle}>
-                <option value="">Target node…</option>
-                {nodes.filter((node) => node.id !== selectedNodeId).map((node) => (
-                  <option key={node.id} value={node.id}>{truncate(node.data?.title || node.id, 50)}</option>
-                ))}
-              </select>
-            </div>
-            <button type="button" onClick={addSemanticEdge} disabled={!linkTargetId} style={{ ...primaryButtonStyle, marginTop: 6, opacity: linkTargetId ? 1 : 0.5 }}>Create relation</button>
-
-            {selectedEdges.length ? (
-              <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Relations</div>
-                {selectedEdges.map((edge) => {
-                  const otherId = edge.source === selectedNodeId ? edge.target : edge.source;
-                  const other = nodes.find((node) => node.id === otherId);
-                  return (
-                    <div key={edge.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '4px 0', fontSize: 10 }}>
-                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {edge.source === selectedNodeId ? '→' : '←'} {edge.data?.relation || edge.label || 'informs'} · {other?.data?.title || otherId}
-                      </span>
-                      <button type="button" onClick={() => deleteEdge(edge.id)} style={tinyButtonStyle}>×</button>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <div style={{ fontSize: 11, color: '#64748b' }}>
-            Select a research node to edit its title, checkpoint, anchor, and semantic relations.
-          </div>
-        )}
-
-        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #f1f5f9', fontSize: 9, color: '#94a3b8' }}>
-          v0.1 · {nodes.length} nodes · {edges.length} relations · {status}
+        <div
+          aria-label="Research canvas tools"
+          style={{
+            position: 'absolute',
+            left: 10,
+            top: 10,
+            zIndex: 35,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 5,
+            padding: 4,
+            border: '1px solid #e2e8f0',
+            borderRadius: 10,
+            background: 'rgba(255,255,255,.94)',
+            boxShadow: '0 5px 16px rgba(15,23,42,.10)',
+            backdropFilter: 'blur(8px)'
+          }}
+        >
+          <RailButton active={manualOpen} title="Add manual node" onClick={() => { setManualOpen((value) => !value); setSettingsOpen(false); }}>+</RailButton>
+          <RailButton active={showMiniMap} title={showMiniMap ? 'Hide minimap' : 'Show minimap'} onClick={() => setMiniMapPreference(showMiniMap ? 'hide' : 'show')}>▧</RailButton>
+          <RailButton active={settingsOpen} title="Blackboard settings" onClick={() => { setSettingsOpen((value) => !value); setManualOpen(false); }}>⋯</RailButton>
         </div>
+
+        {manualOpen ? (
+          <div style={{ ...popoverStyle, left: 52, top: 10, width: 'min(420px, calc(100% - 66px))' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <strong style={{ fontSize: 13, lineHeight: '18px', color: '#111827' }}>Manual node</strong>
+              <button type="button" onClick={() => setManualOpen(false)} style={iconButtonStyle}>×</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '110px minmax(0,1fr)', gap: 6, marginTop: 9 }}>
+              <select value={draftType} onChange={(event) => setDraftType(event.target.value)} style={inputStyle}>
+                {NODE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+              <input
+                value={draftTitle}
+                onChange={(event) => setDraftTitle(event.target.value)}
+                placeholder={suggestedTitle ? `Auto: ${suggestedTitle}` : 'Node title (optional)'}
+                style={inputStyle}
+              />
+            </div>
+            <select value={sourceMessageId} onChange={(event) => setSourceMessageId(event.target.value)} style={{ ...inputStyle, marginTop: 6 }}>
+              <option value="">No message anchor</option>
+              {sourceMessages.map((message) => (
+                <option key={message.id} value={message.id}>{message.role === 'user' ? 'You' : 'GPT'} · {truncate(message.content, 88)}</option>
+              ))}
+            </select>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 7 }}>
+              <button type="button" onClick={addResearchNode} style={primaryButtonStyle}>+ Pin as node</button>
+              <span style={{ minWidth: 0, flex: 1, fontSize: 11.5, lineHeight: '16px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {selectedSource ? `${suggestedTitle}${suggestedKeywords.length ? ` · ${suggestedKeywords.join(' / ')}` : ''}` : 'Manual node'}
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        {settingsOpen ? (
+          <div style={{ ...popoverStyle, left: 52, top: 82, width: 250 }}>
+            <div style={{ fontSize: 12.5, lineHeight: '17px', fontWeight: 650, color: '#111827' }}>Canvas settings</div>
+            <label style={labelStyle}>Detail placement</label>
+            <select value={detailPlacement} onChange={(event) => setDetailPlacement(event.target.value)} style={inputStyle}>
+              <option value="auto">Auto</option>
+              <option value="left">Left overlay</option>
+              <option value="bottom">Bottom overlay</option>
+            </select>
+            <div style={{ marginTop: 9, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => setMiniMapPreference(showMiniMap ? 'hide' : 'show')} style={quietButtonStyle}>
+                {showMiniMap ? 'Hide minimap' : 'Show minimap'}
+              </button>
+              <button type="button" onClick={() => setMiniMapPreference('auto')} style={quietButtonStyle}>Minimap auto</button>
+            </div>
+            <button type="button" onClick={resetGraph} style={{ ...quietButtonStyle, marginTop: 9, color: '#b91c1c' }}>Clear graph</button>
+            <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #eef2f7', fontSize: 10.5, lineHeight: '15px', color: '#94a3b8' }}>
+              {status}
+            </div>
+          </div>
+        ) : null}
+
+        <DetailSurface
+          node={selectedNode}
+          placement={resolvedPlacement}
+          selectedEdges={selectedEdges}
+          nodes={nodes}
+          sourceMap={sourceMap}
+          editMode={editMode}
+          setEditMode={setEditMode}
+          close={closeDetail}
+          patchNode={patchSelectedNode}
+          autoTitle={autoSummarizeSelectedNode}
+          deleteNode={deleteSelectedNode}
+          jumpToNode={() => {
+            const anchor = makeJumpAnchor(selectedNode);
+            if (anchor) onJumpToMessage?.(anchor);
+          }}
+          jumpToHighlight={(highlight) => {
+            const anchor = makeHighlightAnchor(highlight);
+            if (anchor) onJumpToMessage?.(anchor);
+          }}
+          linkRelation={linkRelation}
+          setLinkRelation={setLinkRelation}
+          linkTargetId={linkTargetId}
+          setLinkTargetId={setLinkTargetId}
+          createRelation={addSemanticEdge}
+          deleteEdge={deleteEdge}
+        />
       </div>
     </div>
   );
 }
 
 const inputStyle = {
+  width: '100%',
   minWidth: 0,
+  boxSizing: 'border-box',
   border: '1px solid #cbd5e1',
   borderRadius: 7,
   padding: '7px 8px',
-  fontSize: 11,
+  fontFamily: FONT_STACK,
+  fontSize: 12,
+  lineHeight: '17px',
   background: '#fff',
-  color: '#0f172a',
+  color: '#111827',
   outline: 'none'
 };
 
@@ -651,18 +1054,37 @@ const primaryButtonStyle = {
   color: '#fff',
   borderRadius: 7,
   padding: '7px 10px',
-  fontSize: 11,
-  fontWeight: 700,
+  fontFamily: FONT_STACK,
+  fontSize: 12,
+  lineHeight: '16px',
+  fontWeight: 650,
   cursor: 'pointer'
 };
 
-const smallButtonStyle = {
+const quietButtonStyle = {
   border: '1px solid #cbd5e1',
   background: '#fff',
   color: '#334155',
-  borderRadius: 6,
-  padding: '5px 7px',
-  fontSize: 10,
+  borderRadius: 7,
+  padding: '5px 8px',
+  fontFamily: FONT_STACK,
+  fontSize: 11.5,
+  lineHeight: '16px',
+  fontWeight: 550,
+  cursor: 'pointer'
+};
+
+const iconButtonStyle = {
+  width: 28,
+  height: 28,
+  flex: '0 0 28px',
+  border: '1px solid #e2e8f0',
+  borderRadius: 7,
+  background: '#fff',
+  color: '#64748b',
+  fontFamily: FONT_STACK,
+  fontSize: 16,
+  lineHeight: '24px',
   cursor: 'pointer'
 };
 
@@ -676,23 +1098,34 @@ const tinyButtonStyle = {
   color: '#64748b'
 };
 
-const keywordChipStyle = {
-  border: '1px solid #dbeafe',
-  background: '#f8fafc',
-  color: '#475569',
-  borderRadius: 999,
-  padding: '2px 6px',
-  fontSize: 9,
-  lineHeight: 1.3
-};
-
 const labelStyle = {
   display: 'block',
-  marginTop: 8,
+  marginTop: 9,
   marginBottom: 4,
-  fontSize: 10,
-  fontWeight: 700,
+  fontSize: 11.5,
+  lineHeight: '16px',
+  fontWeight: 600,
   color: '#475569'
+};
+
+const sectionTitleStyle = {
+  marginBottom: 6,
+  fontSize: 11.5,
+  lineHeight: '16px',
+  fontWeight: 650,
+  color: '#475569'
+};
+
+const popoverStyle = {
+  position: 'absolute',
+  zIndex: 45,
+  boxSizing: 'border-box',
+  border: '1px solid #dbe3ee',
+  borderRadius: 11,
+  background: 'rgba(255,255,255,.985)',
+  boxShadow: '0 14px 35px rgba(15,23,42,.16)',
+  padding: 11,
+  fontFamily: FONT_STACK
 };
 
 export default function ResearchBlackboard(props) {
