@@ -1,16 +1,16 @@
 /**
- * Side Panel React 入口
+ * Side Panel React entrypoint.
  */
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import AutoGraphDeltaBridge from './components/AutoGraphDeltaBridge';
 import { STORAGE_KEYS } from '../shared/constants';
 
-// 获取根元素
 const container = document.getElementById('root');
 const root = createRoot(container);
+let researchRenderRevision = 0;
 
-// If rendered inside the floating panel iframe, tighten spacing a bit
 try {
   const params = new URLSearchParams(window.location.search);
   if (params.has('embedded')) {
@@ -36,11 +36,9 @@ try {
 
   const applyZoom = (z) => {
     const zoom = clampZoom(z);
-    // 'zoom' is supported in Chromium and reflows layout naturally.
     document.documentElement.style.zoom = String(zoom);
   };
 
-  // Initial load
   try {
     chrome.storage.local.get(STORAGE_KEYS.SIDEPANEL_UI_ZOOM).then((res) => {
       applyZoom(res?.[STORAGE_KEYS.SIDEPANEL_UI_ZOOM] ?? 1);
@@ -49,7 +47,6 @@ try {
     // ignore
   }
 
-  // Live updates
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
@@ -61,9 +58,34 @@ try {
   }
 })();
 
-// 渲染应用
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+function renderApp() {
+  root.render(
+    <React.StrictMode>
+      <AutoGraphDeltaBridge />
+      <App key={`research-revision-${researchRenderRevision}`} />
+    </React.StrictMode>
+  );
+}
+
+// Only auto-delta writes should remount App. Normal research graph saves caused by
+// dragging/editing nodes preserve lastDeltaAt and therefore do not disturb the UI.
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+
+    const deltaChanged = Object.entries(changes || {}).some(([key, change]) => {
+      if (!key.startsWith('researchBlackboard:')) return false;
+      const before = change?.oldValue?.metadata?.lastDeltaAt || null;
+      const after = change?.newValue?.metadata?.lastDeltaAt || null;
+      return !!after && before !== after;
+    });
+
+    if (!deltaChanged) return;
+    researchRenderRevision += 1;
+    renderApp();
+  });
+} catch {
+  // ignore
+}
+
+renderApp();
