@@ -124,9 +124,6 @@ async function fallbackJumpToMessage(anchor) {
 
         if (!preview) return { success: false, method: 'no-preview' };
 
-        // section/article selectors can describe the same turn. Canonicalize and dedupe
-        // before assigning positional indexes, otherwise two DOM wrappers for one turn
-        // can make fallback navigation oscillate between neighboring messages.
         const rawContainers = Array.from(document.querySelectorAll('section[data-turn-id], article'));
         const containers = [];
         const seen = new Set();
@@ -193,7 +190,7 @@ async function fallbackJumpToMessage(anchor) {
             else if (distance === 1) score += 1;
           }
 
-          candidates.push({ container, score, fingerprintHits, index, roleIndex: currentRoleIndex });
+          candidates.push({ container, score, fingerprintHits });
         });
 
         candidates.sort((a, b) => b.score - a.score);
@@ -204,8 +201,6 @@ async function fallbackJumpToMessage(anchor) {
           return { success: false, method: 'not-found', bestScore: best?.score || 0 };
         }
 
-        // If two candidates are effectively tied and we only matched a weak prefix,
-        // fail closed instead of jumping to the wrong neighboring turn.
         const margin = best.score - (second?.score || 0);
         if (second && margin < 3 && best.fingerprintHits < 2) {
           return {
@@ -221,10 +216,10 @@ async function fallbackJumpToMessage(anchor) {
     });
 
     const result = results?.[0]?.result;
-    console.log('[SidePanel] Fallback jump result:', result);
+    console.log('[SidePanel] Direct anchor jump result:', result);
     return !!result?.success;
   } catch (error) {
-    console.warn('[SidePanel] Fallback jump failed:', error);
+    console.warn('[SidePanel] Direct anchor jump failed:', error);
     return false;
   }
 }
@@ -264,7 +259,6 @@ function App() {
     setCurrentNodeId
   } = useConversationData();
 
-  // Embedded mode: allow the parent floating panel to control the legacy views.
   useEffect(() => {
     if (!IS_EMBEDDED) return;
 
@@ -323,7 +317,6 @@ function App() {
     }
   }, [miniMapVisible]);
 
-  // Persist view mode, including the new semantic Research view.
   useEffect(() => {
     (async () => {
       try {
@@ -370,17 +363,13 @@ function App() {
     window.__conversationData = conversationData;
   }, [tree, printTree, treeStats, conversationData]);
 
+  // Legacy Graph/Tree behavior keeps the upstream branch navigator.
   const jumpToMessage = useCallback((input) => {
     const anchor = buildMessageAnchor(conversationData, input);
     if (!anchor?.messageId) return;
 
     const { messageId } = anchor;
     console.log('[SidePanel] Sending SCROLL_TO_MESSAGE for:', messageId, anchor);
-
-    const runFallback = () => {
-      if (!anchor.preview) return;
-      void fallbackJumpToMessage(anchor);
-    };
 
     chrome.runtime.sendMessage({
       type: MESSAGE_TYPES.SCROLL_TO_MESSAGE,
@@ -389,18 +378,25 @@ function App() {
       const runtimeError = chrome.runtime.lastError;
       if (runtimeError) {
         console.error('[SidePanel] sendMessage error:', runtimeError);
-        runFallback();
         return;
       }
-
       console.log('[SidePanel] sendMessage response:', response);
+    });
+  }, [conversationData]);
 
-      // Background wraps the content-script response as { success: true, data: ... }.
-      // Trigger the stronger fingerprint fallback only after the normal navigator
-      // explicitly fails; exact-ID navigation remains the preferred path.
-      if (response?.success === false || response?.data?.success === false) {
-        runFallback();
+  // Research Blackboard deliberately does NOT invoke the upstream branch-switcher.
+  // A research-node click is fail-closed: exact/fingerprinted DOM match or no jump.
+  // This prevents an uncertain anchor from clicking ChatGPT's prev/next branch buttons
+  // and oscillating between two sibling turns.
+  const jumpToResearchMessage = useCallback((input) => {
+    const anchor = buildMessageAnchor(conversationData, input);
+    if (!anchor?.messageId) return Promise.resolve(false);
+
+    return fallbackJumpToMessage(anchor).then((success) => {
+      if (!success) {
+        console.warn('[ResearchBlackboard] Source not safely locatable; refusing branch switch:', anchor.messageId);
       }
+      return success;
     });
   }, [conversationData]);
 
@@ -438,13 +434,11 @@ function App() {
   );
 
   const renderContent = () => {
-    // Research Blackboard uses raw conversation messages as anchors and does not
-    // depend on the legacy QA-tree transformation being ready.
     if (viewMode === 'research') {
       return (
         <ResearchBlackboard
           conversationData={conversationData}
-          onJumpToMessage={jumpToMessage}
+          onJumpToMessage={jumpToResearchMessage}
         />
       );
     }
