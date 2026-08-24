@@ -19,9 +19,11 @@ import {
   useNodesState
 } from '@xyflow/react';
 import ResearchNode from './ResearchNode';
+import ResearchSemanticEdge from './ResearchSemanticEdge';
 import { clearResearchGraph, loadResearchGraph, saveResearchGraph } from '../utils/researchStore';
 
 const nodeTypes = { researchNode: ResearchNode };
+const edgeTypes = { smoothstep: ResearchSemanticEdge };
 const RELATIONS = ['deepens', 'compares', 'supports', 'contradicts', 'informs'];
 const NODE_TYPES = ['analysis', 'comparison', 'judgment', 'question'];
 const DETAIL_PLACEMENT_KEY = 'researchBlackboard:detailPlacement';
@@ -906,6 +908,7 @@ function ResearchBlackboardInner({ conversationData, onJumpToMessage }) {
           nodes={displayNodes}
           edges={displayEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
