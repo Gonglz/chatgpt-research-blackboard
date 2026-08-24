@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { loadResearchGraph, saveResearchGraph } from '../utils/researchStore';
 import { applyGraphDelta, parseGraphDelta } from '../utils/graphDelta';
 
-const DOM_PROCESSOR_VERSION = 1;
+const DOM_PROCESSOR_VERSION = 2;
 const POLL_MS = 900;
 
 function conversationIdFromUrl(url) {
@@ -38,11 +38,7 @@ async function getActiveChatTab() {
   }
 }
 
-/**
- * Read v3 RGΔ fenced blocks directly from the rendered ChatGPT page.
- * The producer hides those <pre> elements visually, but textContent remains
- * available to the extension. No conversation API or background DB is required.
- */
+/** Read completed fenced RGΔ blocks directly from the rendered ChatGPT DOM. */
 async function readDomDeltas(tabId) {
   try {
     const results = await chrome.scripting.executeScript({
@@ -97,9 +93,7 @@ async function readDomDeltas(tabId) {
           if (!blocks.length) return;
 
           let visibleText = String(container.innerText || container.textContent || '');
-          for (const block of blocks) {
-            visibleText = visibleText.replace(block, ' ');
-          }
+          for (const block of blocks) visibleText = visibleText.replace(block, ' ');
           visibleText = normalize(visibleText);
 
           blocks.forEach((block) => {
@@ -148,11 +142,7 @@ export default function DomGraphDeltaBridge() {
         if (!active) return;
 
         const dom = await readDomDeltas(active.tabId);
-        if (!dom?.deltas?.length) return;
-
-        // Do not apply a partially streamed machine block. Wait until the answer
-        // settles, then consume the complete block in one reducer transaction.
-        if (dom.streaming) return;
+        if (!dom?.deltas?.length || dom.streaming) return;
 
         const graph = await loadResearchGraph(active.conversationId);
         const applied = new Set(graph.metadata?.appliedDomDeltaKeys || []);
@@ -178,6 +168,7 @@ export default function DomGraphDeltaBridge() {
           if (!parsed.operations?.length) continue;
 
           const next = applyGraphDelta(state, parsed, {
+            conversationId: active.conversationId,
             messageId: item.messageId,
             role: item.role,
             preview: item.preview,
@@ -203,6 +194,7 @@ export default function DomGraphDeltaBridge() {
           return;
         }
 
+        const nextRevision = Number(graph.metadata?.deltaRevision || 0) + appliedNow.length;
         await saveResearchGraph(
           active.conversationId,
           state.nodes,
@@ -211,13 +203,16 @@ export default function DomGraphDeltaBridge() {
             domDeltaProcessorVersion: DOM_PROCESSOR_VERSION,
             appliedDomDeltaKeys: Array.from(applied).slice(-500),
             focusNodeId: state.focusNodeId,
+            deltaRevision: nextRevision,
             lastDeltaAt: Date.now(),
-            lastDeltaSource: 'dom'
+            lastDeltaSource: 'dom',
+            lastDeltaConversationId: active.conversationId
           }
         );
 
         console.log('[ResearchDOM] Applied RGΔ directly from DOM:', {
           blocks: appliedNow.length,
+          revision: nextRevision,
           changes,
           errors
         });
@@ -229,9 +224,7 @@ export default function DomGraphDeltaBridge() {
     };
 
     void tick();
-    timer = window.setInterval(() => {
-      void tick();
-    }, POLL_MS);
+    timer = window.setInterval(() => { void tick(); }, POLL_MS);
 
     return () => {
       cancelled = true;
