@@ -101,7 +101,7 @@ function reconcileMirrorMutation(canonical, local, conversationId) {
   return { ...local, nodes, edges };
 }
 
-function mirrorFromCanonical(canonical, conversationId, projectId, now) {
+function mirrorFromCanonical(canonical, conversationId, projectId, mirroredAt) {
   return {
     ...canonical,
     conversationId,
@@ -111,9 +111,11 @@ function mirrorFromCanonical(canonical, conversationId, projectId, now) {
       projectId,
       researchScope: 'project',
       projectMirrorOf: projectId,
-      projectMirrorAt: now
+      projectMirrorAt: mirroredAt
     },
-    updatedAt: now
+    // Mirror and canonical share one version clock. projectMirrorAt records when
+    // this local copy was refreshed without making it look like a new mutation.
+    updatedAt: Number(canonical.updatedAt || 0) || mirroredAt
   };
 }
 
@@ -154,9 +156,8 @@ export default function ResearchProjectMirrorBridge() {
         const canonicalUpdated = Number(canonical.updatedAt || 0);
 
         if (!local || canonicalUpdated > localUpdated) {
-          const now = Date.now();
           await chrome.storage.local.set({
-            [localKey]: mirrorFromCanonical(canonical, conversationId, projectId, now)
+            [localKey]: mirrorFromCanonical(canonical, conversationId, projectId, Date.now())
           });
           return;
         }
