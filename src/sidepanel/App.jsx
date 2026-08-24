@@ -8,6 +8,7 @@ import ResearchBlackboard from './components/ResearchBlackboard';
 import Header from './components/Header';
 import { useConversationData } from './hooks/useConversationData';
 import { useQATree, useBranchChangeListener } from './hooks/useQATree';
+import { jumpToResearchSource } from './utils/researchSourceJump';
 import { MESSAGE_TYPES } from '../shared/constants.js';
 
 const IS_EMBEDDED = (() => {
@@ -58,170 +59,6 @@ function buildMessageAnchor(conversationData, input) {
     messageIndex: Number.isInteger(supplied.messageIndex) ? supplied.messageIndex : messageIndex,
     roleIndex
   };
-}
-
-async function fallbackJumpToMessage(anchor) {
-  if (!anchor?.messageId && !anchor?.preview) return false;
-
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return false;
-    if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) return false;
-
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      args: [anchor],
-      func: (payload) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        const escapeValue = (value) => (
-          window.CSS?.escape
-            ? window.CSS.escape(value)
-            : String(value).replace(/["\\]/g, '\\$&')
-        );
-
-        const messageId = payload?.messageId || '';
-        const expectedRole = normalize(payload?.role).toLowerCase();
-        const preview = normalize(payload?.preview);
-        const tail = normalize(payload?.tail);
-        const expectedLength = Number(payload?.textLength) || 0;
-        const expectedMessageIndex = Number.isInteger(payload?.messageIndex) ? payload.messageIndex : -1;
-        const expectedRoleIndex = Number.isInteger(payload?.roleIndex) ? payload.roleIndex : -1;
-
-        const findContainer = (node) => {
-          if (!node) return null;
-          const section = node.matches?.('section[data-turn-id]')
-            ? node
-            : node.closest?.('section[data-turn-id]');
-          if (section) return section;
-          if (node.matches?.('article')) return node;
-          return node.closest?.('article') || node;
-        };
-
-        const highlightAndScroll = (element, method, score = null) => {
-          const target = findContainer(element);
-          if (!target) return { success: false, method };
-
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          const previousOutline = target.style.outline;
-          const previousOutlineOffset = target.style.outlineOffset;
-          target.style.outline = '2px solid rgba(59, 130, 246, 0.75)';
-          target.style.outlineOffset = '4px';
-          window.setTimeout(() => {
-            target.style.outline = previousOutline;
-            target.style.outlineOffset = previousOutlineOffset;
-          }, 1400);
-          return { success: true, method, score };
-        };
-
-        if (messageId) {
-          const escaped = escapeValue(messageId);
-          const exact =
-            document.querySelector(`[data-message-id="${escaped}"]`) ||
-            document.querySelector(`[data-turn-id="${escaped}"]`) ||
-            document.querySelector(`[id="image-${escaped}"]`);
-          if (exact) return highlightAndScroll(exact, 'exact-id-fallback');
-        }
-
-        if (!preview) return { success: false, method: 'no-preview' };
-
-        const rawContainers = Array.from(document.querySelectorAll('section[data-turn-id], article'));
-        const containers = [];
-        const seen = new Set();
-        for (const raw of rawContainers) {
-          const canonical = findContainer(raw);
-          if (!canonical || seen.has(canonical)) continue;
-          seen.add(canonical);
-          containers.push(canonical);
-        }
-
-        const candidates = [];
-        const roleCounters = new Map();
-        const startNeedle = preview.slice(0, Math.min(180, preview.length));
-        const shortNeedle = startNeedle.slice(0, Math.min(84, startNeedle.length));
-        const tailNeedle = tail.slice(-Math.min(140, tail.length));
-
-        containers.forEach((container, index) => {
-          const roleNode = container.matches?.('[data-message-author-role]')
-            ? container
-            : container.querySelector?.('[data-message-author-role]');
-          const candidateRole = normalize(roleNode?.getAttribute?.('data-message-author-role')).toLowerCase();
-          const currentRoleIndex = roleCounters.get(candidateRole) || 0;
-          roleCounters.set(candidateRole, currentRoleIndex + 1);
-
-          if (expectedRole && candidateRole && expectedRole !== candidateRole) return;
-
-          const text = normalize(container.innerText || container.textContent || '');
-          if (!text) return;
-
-          let score = 0;
-          let fingerprintHits = 0;
-
-          if (expectedRole && candidateRole === expectedRole) score += 4;
-
-          if (startNeedle.length >= 24 && text.includes(startNeedle)) {
-            score += 14;
-            fingerprintHits += 1;
-          } else if (shortNeedle.length >= 24 && text.includes(shortNeedle)) {
-            score += 9;
-            fingerprintHits += 1;
-          }
-
-          if (tailNeedle.length >= 24 && text.includes(tailNeedle)) {
-            score += 12;
-            fingerprintHits += 1;
-          }
-
-          if (expectedLength > 0) {
-            const ratio = Math.abs(text.length - expectedLength) / Math.max(expectedLength, 1);
-            if (ratio <= 0.08) score += 5;
-            else if (ratio <= 0.20) score += 3;
-            else if (ratio <= 0.40) score += 1;
-          }
-
-          if (expectedRoleIndex >= 0 && candidateRole === expectedRole) {
-            const distance = Math.abs(currentRoleIndex - expectedRoleIndex);
-            if (distance === 0) score += 7;
-            else if (distance === 1) score += 2;
-          }
-
-          if (expectedMessageIndex >= 0) {
-            const distance = Math.abs(index - expectedMessageIndex);
-            if (distance === 0) score += 4;
-            else if (distance === 1) score += 1;
-          }
-
-          candidates.push({ container, score, fingerprintHits });
-        });
-
-        candidates.sort((a, b) => b.score - a.score);
-        const best = candidates[0];
-        const second = candidates[1];
-
-        if (!best || best.score < 10) {
-          return { success: false, method: 'not-found', bestScore: best?.score || 0 };
-        }
-
-        const margin = best.score - (second?.score || 0);
-        if (second && margin < 3 && best.fingerprintHits < 2) {
-          return {
-            success: false,
-            method: 'ambiguous',
-            bestScore: best.score,
-            secondScore: second.score
-          };
-        }
-
-        return highlightAndScroll(best.container, 'fingerprint-fallback', best.score);
-      }
-    });
-
-    const result = results?.[0]?.result;
-    console.log('[SidePanel] Direct anchor jump result:', result);
-    return !!result?.success;
-  } catch (error) {
-    console.warn('[SidePanel] Direct anchor jump failed:', error);
-    return false;
-  }
 }
 
 function App() {
@@ -339,12 +176,10 @@ function App() {
   const {
     tree,
     selectedPath,
-    activeLeafId,
-    selectNode,
-    isNodeSelected,
     stats: treeStats,
     printTree,
-    isReady: isTreeReady
+    isReady: isTreeReady,
+    selectNode
   } = useQATree(
     conversationData?.nodes || null,
     conversationData?.edges || null,
@@ -384,17 +219,15 @@ function App() {
     });
   }, [conversationData]);
 
-  // Research Blackboard deliberately does NOT invoke the upstream branch-switcher.
-  // A research-node click is fail-closed: exact/fingerprinted DOM match or no jump.
-  // This prevents an uncertain anchor from clicking ChatGPT's prev/next branch buttons
-  // and oscillating between two sibling turns.
+  // Research jump stays fail-closed. In Project mode it may navigate to another
+  // attached source Chat using provenance, but never clicks ChatGPT branch arrows.
   const jumpToResearchMessage = useCallback((input) => {
     const anchor = buildMessageAnchor(conversationData, input);
     if (!anchor?.messageId) return Promise.resolve(false);
 
-    return fallbackJumpToMessage(anchor).then((success) => {
+    return jumpToResearchSource(anchor).then((success) => {
       if (!success) {
-        console.warn('[ResearchBlackboard] Source not safely locatable; refusing branch switch:', anchor.messageId);
+        console.warn('[ResearchBlackboard] Source not safely locatable:', anchor.messageId);
       }
       return success;
     });
