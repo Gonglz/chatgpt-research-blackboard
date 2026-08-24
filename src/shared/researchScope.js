@@ -71,22 +71,30 @@ export async function writeScopedGraphRecord(conversationId, graph, { mirror = t
   const scope = await resolveResearchScope(conversationId);
   if (!scope.graphKey) return scope;
 
+  const updatedAt = Number(graph?.updatedAt) || Date.now();
   const payload = {
     ...graph,
-    conversationId,
+    conversationId: scope.type === 'project' ? null : conversationId,
     projectId: scope.projectId || null,
-    updatedAt: Number(graph?.updatedAt) || Date.now()
+    metadata: {
+      ...(graph?.metadata || {}),
+      researchScope: scope.type,
+      projectId: scope.projectId || null
+    },
+    updatedAt
   };
 
   const writes = { [scope.graphKey]: payload };
   if (mirror && scope.type === 'project' && scope.mirrorKey) {
     writes[scope.mirrorKey] = {
       ...payload,
+      conversationId,
       metadata: {
         ...(payload.metadata || {}),
         projectMirrorOf: scope.projectId,
         projectMirrorAt: Date.now()
-      }
+      },
+      updatedAt
     };
   }
 
