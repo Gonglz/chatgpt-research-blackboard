@@ -40,7 +40,8 @@
       ],
       "js": [
         "dist/content.js",
-        "dist/research-producer.js"
+        "dist/research-producer.js",
+        "dist/research-selection.js"
       ],
       "run_at": "document_idle"
     }
