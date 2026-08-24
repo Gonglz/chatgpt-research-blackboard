@@ -85,6 +85,7 @@ function ResearchNode({ data, selected }) {
       onPointerEnter={handlePointerEnter}
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
+      aria-label={`${meta.label}: ${data.title || 'Untitled research node'}${highlights.length ? `, ${highlights.length} saved highlights` : ''}`}
       style={{
         position: 'relative',
         boxSizing: 'border-box',
@@ -111,7 +112,7 @@ function ResearchNode({ data, selected }) {
             {meta.label}
           </span>
           {highlights.length ? (
-            <span title={`${highlights.length} saved highlights`} style={{ fontSize: 11, lineHeight: '14px', fontWeight: 650, color: '#64748b' }}>
+            <span aria-label={`${highlights.length} saved highlights`} style={{ fontSize: 11, lineHeight: '14px', fontWeight: 650, color: '#64748b' }}>
               ★ {highlights.length}
             </span>
           ) : null}
@@ -119,7 +120,6 @@ function ResearchNode({ data, selected }) {
       ) : null}
 
       <div
-        title={data.title || 'Untitled research node'}
         style={{
           marginTop: farZoom ? 6 : 3,
           minHeight: farZoom ? 37 : 38,
@@ -140,6 +140,7 @@ function ResearchNode({ data, selected }) {
 
       {!farZoom ? (
         <div
+          aria-label={keywords.length ? `Keywords: ${keywords.join(', ')}` : undefined}
           style={{
             marginTop: 2,
             minHeight: 15,
@@ -150,7 +151,6 @@ function ResearchNode({ data, selected }) {
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap'
           }}
-          title={keywords.join(' · ')}
         >
           {keywords.length ? keywords.join(' · ') : (highlights.length ? `${highlights.length} saved highlight${highlights.length === 1 ? '' : 's'}` : ' ')}
         </div>
