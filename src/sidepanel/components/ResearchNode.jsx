@@ -16,6 +16,7 @@ const TYPE_META = {
 function ResearchNode({ data, selected }) {
   const meta = TYPE_META[data.type] || TYPE_META.analysis;
   const keywords = Array.isArray(data.keywords) ? data.keywords.slice(0, 3) : [];
+  const highlightCount = Array.isArray(data.highlights) ? data.highlights.length : 0;
 
   return (
     <div
@@ -35,9 +36,16 @@ function ResearchNode({ data, selected }) {
         <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: meta.accent }}>
           {meta.label}
         </span>
-        {data.messageId ? (
-          <span title="Anchored to a ChatGPT message" style={{ fontSize: 11, opacity: 0.65 }}>↗ chat</span>
-        ) : null}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          {highlightCount ? (
+            <span title={`${highlightCount} saved highlight${highlightCount === 1 ? '' : 's'}`} style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>
+              ★ {highlightCount}
+            </span>
+          ) : null}
+          {data.messageId ? (
+            <span title="Anchored to a ChatGPT message" style={{ fontSize: 11, opacity: 0.65 }}>↗ chat</span>
+          ) : null}
+        </div>
       </div>
 
       <div
