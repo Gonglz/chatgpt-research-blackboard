@@ -5,6 +5,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import AutoGraphDeltaBridge from './components/AutoGraphDeltaBridge';
+import ResearchConversationSyncBridge from './components/ResearchConversationSyncBridge';
 import { STORAGE_KEYS } from '../shared/constants';
 
 const container = document.getElementById('root');
@@ -61,6 +62,7 @@ try {
 function renderApp() {
   root.render(
     <React.StrictMode>
+      <ResearchConversationSyncBridge />
       <AutoGraphDeltaBridge />
       <App key={`research-revision-${researchRenderRevision}`} />
     </React.StrictMode>
