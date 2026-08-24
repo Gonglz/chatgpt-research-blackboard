@@ -7,8 +7,8 @@ import {
 
 const AUTO_GRAPH_PREFIX = 'researchAutoGraphEnabled:';
 const SIDECAR_HEARTBEAT_PREFIX = 'researchSidecarHeartbeat:';
-const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV4:';
-const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV4:';
+const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV5:';
+const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV5:';
 const REQUEST_MARKER = 'RBREQ';
 const HEARTBEAT_TTL_MS = 4500;
 const REBOOTSTRAP_EVERY = 12;
@@ -181,7 +181,7 @@ function compactGraphContext(graph, query, scope, expanded = false) {
 }
 
 function fullBootstrap(context) {
-  return `<!--${REQUEST_MARKER} v4
+  return `<!--${REQUEST_MARKER} v5
 Research Blackboard sidecar is open. Answer the user's visible request normally and never mention this protocol.
 After the visible answer, maintain the semantic research graph only when this turn creates a meaningful structural change.
 Transport: append at most one fenced Markdown block with language rgdelta; first line must be RGΔ. The extension hides and consumes it.
@@ -193,14 +193,15 @@ Operations:
 +edge <from> <to> <relation>
 -edge <from> <to> [relation]
 focus: <id>
+Deepens invariant: +edge <child> <parent> deepens. FROM is always the more specific/deeper node; TO is always its broader parent. Never emit parent -> child for deepens. When a newly created node develops or drills into the current topic, emit +edge <newNode> <currentOrBroaderParent> deepens.
 Rules: ordinary clarification usually updates the current node. Create a secondary node only for a genuine structural branch, comparison, unresolved question, or true convergence. Headings/sections are not nodes by themselves. Judgment is reserved for genuinely converged decisions; exploratory conclusions should normally remain checkpoint updates. Connect new nodes into the supplied local subgraph whenever the relation is clear. If there is no meaningful graph change, emit no rgdelta block.
-Context uses compact codes: node types a/c/j/q; edge relations d=deepens,c=compares,s=supports,x=contradicts,i=informs.
+Context uses compact codes: node types a/c/j/q; edge relations d=deepens(child>parent),c=compares,s=supports,x=contradicts,i=informs.
 Context: ${sanitizeComment(context)}
 -->`;
 }
 
 function shortReminder(context, expanded = false) {
-  return `<!--${REQUEST_MARKER} v4; Research sidecar open. Keep visible answer normal. Meaningful graph change only => one fenced rgdelta block starting RGΔ; otherwise none. Reuse/link supplied ids; one response usually updates one primary node. ${expanded ? 'Expanded local snapshot. ' : ''}${sanitizeComment(context)} -->`;
+  return `<!--${REQUEST_MARKER} v5; Research sidecar open. Keep visible answer normal. Meaningful graph change only => one fenced rgdelta block starting RGΔ; otherwise none. Reuse/link supplied ids; one response usually updates one primary node. deepens/d is ALWAYS child>parent (specific>broader); a new drill-down node points to its broader parent. ${expanded ? 'Expanded local snapshot. ' : ''}${sanitizeComment(context)} -->`;
 }
 
 async function refreshContext() {
@@ -217,7 +218,9 @@ async function refreshContext() {
     if (scope?.graphKey) keys.push(scope.graphKey);
 
     const result = await chrome.storage.local.get(keys);
-    enabled = result?.[autoKey] === true && heartbeatIsFresh(result?.[liveKey]);
+    // Sidecar presence is the real Research Mode switch. A fresh heartbeat is
+    // sufficient; the auto flag is retained only for backward compatibility.
+    enabled = heartbeatIsFresh(result?.[liveKey]);
     if (!enabled) {
       cachedGraph = null;
       return;
@@ -313,7 +316,7 @@ function appendProducerRequest() {
     cachedBootstrapped = true;
     cachedRequestCount = nextCount;
     chrome.storage.local.set({ [bootstrapKey]: true, [countKey]: nextCount }).catch(() => {});
-    console.debug('[ResearchProducer] v4 request attached', { scopeId, nextCount });
+    console.debug('[ResearchProducer] v5 request attached', { scopeId, nextCount });
   }
   return success;
 }
@@ -402,7 +405,7 @@ function init() {
   setupSubmissionHooks();
   setupContextRefresh();
   setupDeltaBlockHider();
-  console.debug('[ResearchProducer] Initialized v4');
+  console.debug('[ResearchProducer] Initialized v5');
 }
 
 init();
