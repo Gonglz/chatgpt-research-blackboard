@@ -4,7 +4,8 @@ const elk = new ELK();
 
 export const RESEARCH_NODE_WIDTH = 200;
 export const RESEARCH_NODE_HEIGHT = 88;
-export const RESEARCH_LAYOUT_ALGORITHM = 'elk-layered-down-v3';
+export const RESEARCH_LAYOUT_ALGORITHM = 'elk-layered-down-v4';
+const HORIZONTAL_NODE_GAP = 48;
 
 export function cleanResearchRelation(edge) {
   return String(edge?.data?.relation || edge?.label || 'informs').trim().toLowerCase();
@@ -187,12 +188,65 @@ function translatedTargets(nodes, elkChildren, layoutState) {
 }
 
 /**
+ * Soft horizontal preferences are allowed to bend ELK's X coordinates, but
+ * they are never allowed to re-introduce overlap. Resolve collisions after all
+ * preference blending, grouped by semantic backbone depth. The group is
+ * re-centered afterwards so the whole rank does not drift progressively right.
+ */
+function resolveRankCollisions(nodes = [], depthByNodeId = {}, gap = HORIZONTAL_NODE_GAP) {
+  const groups = new Map();
+  for (const node of nodes) {
+    const id = String(node.id);
+    const depth = Number.isFinite(depthByNodeId?.[id]) ? depthByNodeId[id] : 0;
+    const list = groups.get(depth) || [];
+    list.push(node);
+    groups.set(depth, list);
+  }
+
+  const resolvedById = new Map();
+  const minStep = RESEARCH_NODE_WIDTH + gap;
+
+  for (const group of groups.values()) {
+    const ordered = group.slice().sort((a, b) => {
+      const ax = stableNumber(a?.position?.x);
+      const bx = stableNumber(b?.position?.x);
+      return ax - bx || String(a.id).localeCompare(String(b.id));
+    });
+    if (!ordered.length) continue;
+
+    const desired = ordered.map((node) => stableNumber(node?.position?.x));
+    const placed = [desired[0]];
+    for (let i = 1; i < desired.length; i++) {
+      placed[i] = Math.max(desired[i], placed[i - 1] + minStep);
+    }
+
+    const desiredCenter = (desired[0] + desired[desired.length - 1] + RESEARCH_NODE_WIDTH) / 2;
+    const placedCenter = (placed[0] + placed[placed.length - 1] + RESEARCH_NODE_WIDTH) / 2;
+    const recenter = desiredCenter - placedCenter;
+
+    ordered.forEach((node, index) => {
+      resolvedById.set(String(node.id), {
+        x: placed[index] + recenter,
+        y: stableNumber(node?.position?.y)
+      });
+    });
+  }
+
+  return nodes.map((node) => {
+    const position = resolvedById.get(String(node.id)) || positionOf(node);
+    return { ...node, position };
+  });
+}
+
+/**
  * Run ELK on the primary deepens backbone only. Canonical deepens edges are
  * child -> parent, so layout edges are deliberately reversed to parent -> child.
  * Cross-links are excluded from ranking; React Flow renders them contextually.
  *
- * v3 invariant: vertical depth is structural. User/current positions can soften
- * horizontal placement, but cannot pull a child back onto its parent's rank.
+ * v4 invariants:
+ * - vertical depth is structural and comes directly from ELK;
+ * - user/current positions may soften horizontal placement;
+ * - final same-rank positions are collision-free, regardless of preferences.
  */
 export async function layoutResearchGraph(nodes = [], edges = [], previousLayoutState = {}) {
   if (!nodes.length) {
@@ -247,10 +301,9 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
   const laidOut = await elk.layout(graph);
   const targets = translatedTargets(nodes, laidOut.children || [], previousLayoutState);
   const preferredPositions = { ...(previousLayoutState?.preferredPositions || {}) };
-  const lastAppliedPositions = {};
   const previousApplied = previousLayoutState?.lastAppliedPositions || {};
 
-  const nextNodes = nodes.map((node) => {
+  const provisionalNodes = nodes.map((node) => {
     const id = String(node.id);
     const current = positionOf(node);
     const target = targets.get(id) || current;
@@ -275,9 +328,21 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
       next = target;
     }
 
+    return { ...node, position: next };
+  });
+
+  const collisionFreeNodes = resolveRankCollisions(
+    provisionalNodes,
+    backbone.depthByNodeId,
+    HORIZONTAL_NODE_GAP
+  );
+
+  const lastAppliedPositions = {};
+  const nextNodes = collisionFreeNodes.map((node) => {
+    const id = String(node.id);
     const rounded = {
-      x: Math.round(next.x * 10) / 10,
-      y: Math.round(next.y * 10) / 10
+      x: Math.round(stableNumber(node.position?.x) * 10) / 10,
+      y: Math.round(stableNumber(node.position?.y) * 10) / 10
     };
     lastAppliedPositions[id] = rounded;
     return { ...node, position: rounded };
