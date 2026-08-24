@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { loadScopedGraphRecord, writeScopedGraphRecord } from '../../shared/researchScope';
+import { jumpToResearchHighlightSource } from '../utils/researchSourceJump';
 
 const FONT_STACK = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
-const EXACT_HIGHLIGHT_MS = 5000;
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -61,111 +61,6 @@ async function mutateSelectedGraph(mutator) {
   if (!next) return false;
   await saveGraph(conversationId, next, next.metadata?.selectedNodeId || selectedNodeId);
   return true;
-}
-
-async function exactJump(highlight) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return false;
-  const payload = {
-    messageId: highlight?.messageId || '',
-    quote: cleanText(highlight?.quote || ''),
-    paragraph: cleanText(highlight?.localParagraph || ''),
-    durationMs: EXACT_HIGHLIGHT_MS
-  };
-  if (!payload.quote) return false;
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    args: [payload],
-    func: (input) => {
-      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      const escapeValue = (value) => window.CSS?.escape ? window.CSS.escape(value) : String(value).replace(/["\\]/g, '\\$&');
-      const durationMs = Math.max(1000, Number(input.durationMs) || 5000);
-
-      const findContainer = () => {
-        if (input.messageId) {
-          const id = escapeValue(input.messageId);
-          const exact = document.querySelector(`[data-turn-id="${id}"]`) || document.querySelector(`[data-message-id="${id}"]`);
-          if (exact) return exact.closest('section[data-turn-id], article') || exact;
-        }
-        return Array.from(document.querySelectorAll('section[data-turn-id], article'))
-          .find((el) => normalize(el.innerText || el.textContent || '').includes(input.quote)) || null;
-      };
-
-      const container = findContainer();
-      if (!container) return { success: false, method: 'message-not-found' };
-
-      const blocks = Array.from(container.querySelectorAll('p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6, div'));
-      let target = blocks.find((el) => normalize(el.innerText || el.textContent || '').includes(input.quote));
-      if (!target && input.paragraph) {
-        const probe = input.paragraph.slice(0, 120);
-        target = blocks.find((el) => normalize(el.innerText || el.textContent || '').includes(probe));
-      }
-      target ||= container;
-
-      const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
-      const chars = [];
-      const map = [];
-      let lastWasSpace = false;
-      let node;
-
-      while ((node = walker.nextNode())) {
-        const text = node.nodeValue || '';
-        for (let i = 0; i < text.length; i++) {
-          const ch = text[i];
-          if (/\s/.test(ch)) {
-            if (chars.length && !lastWasSpace) {
-              chars.push(' ');
-              map.push({ node, offset: i });
-              lastWasSpace = true;
-            }
-          } else {
-            chars.push(ch);
-            map.push({ node, offset: i });
-            lastWasSpace = false;
-          }
-        }
-      }
-
-      const normalizedTarget = chars.join('').trim();
-      const quote = normalize(input.quote);
-      const start = normalizedTarget.indexOf(quote);
-
-      if (start >= 0 && map[start] && map[start + quote.length - 1]) {
-        const startPoint = map[start];
-        const endPoint = map[start + quote.length - 1];
-        const range = document.createRange();
-        range.setStart(startPoint.node, startPoint.offset);
-        range.setEnd(endPoint.node, Math.min((endPoint.node.nodeValue || '').length, endPoint.offset + 1));
-        (range.startContainer.parentElement || target).scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-        try {
-          if (window.Highlight && CSS?.highlights) {
-            let style = document.getElementById('research-blackboard-exact-highlight-style');
-            if (!style) {
-              style = document.createElement('style');
-              style.id = 'research-blackboard-exact-highlight-style';
-              style.textContent = '::highlight(research-blackboard-exact){ background: #fde68a; color: inherit; }';
-              document.head.appendChild(style);
-            }
-            CSS.highlights.set('research-blackboard-exact', new Highlight(range));
-            window.setTimeout(() => CSS.highlights.delete('research-blackboard-exact'), durationMs);
-            return { success: true, method: 'exact-range' };
-          }
-        } catch {
-          // Fall through to block-level highlight.
-        }
-      }
-
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      const previous = target.style.backgroundColor;
-      target.style.backgroundColor = '#fef3c7';
-      window.setTimeout(() => { target.style.backgroundColor = previous; }, durationMs);
-      return { success: true, method: 'block-fallback' };
-    }
-  });
-
-  return !!results?.[0]?.result?.success;
 }
 
 function managerButtonStyle(active) {
@@ -342,6 +237,13 @@ export default function ResearchHighlightManager({ enabled = true }) {
         messagePreview: highlight.messagePreview || cleanText(highlight.quote).slice(0, 180),
         messageTail: highlight.messageTail || '',
         messageTextLength: highlight.messageTextLength || 0,
+        sources: [{
+          conversationId: highlight.conversationId || null,
+          messageId: highlight.messageId || null,
+          role: highlight.messageRole || 'assistant',
+          preview: highlight.messagePreview || '',
+          addedAt: Date.now()
+        }].filter((source) => source.conversationId || source.messageId),
         highlights: [{ ...highlight }],
         createdFromHighlight: true,
         promotedFromNodeId: nodeId,
@@ -353,7 +255,11 @@ export default function ResearchHighlightManager({ enabled = true }) {
       nodes: [...current.nodes, promoted],
       edges: [...(current.edges || []), {
         id: makeId('edge'), source: nodeId, target: id, type: 'smoothstep', label: 'deepens',
-        data: { relation: 'deepens', createdFromHighlight: true }
+        data: {
+          relation: 'deepens',
+          createdFromHighlight: true,
+          sources: highlight.conversationId ? [{ conversationId: highlight.conversationId, messageId: highlight.messageId || null, addedAt: Date.now() }] : []
+        }
       }],
       metadata: { ...(current.metadata || {}), selectedNodeId: id, focusNodeId: id }
     };
@@ -423,7 +329,7 @@ export default function ResearchHighlightManager({ enabled = true }) {
                   <button
                     type="button"
                     onClick={async () => {
-                      const ok = await exactJump(highlight);
+                      const ok = await jumpToResearchHighlightSource(highlight, 5000);
                       setStatus(ok ? 'Exact source located · highlighted for 5s' : 'Exact source not found');
                     }}
                     style={{ flex: 1, minWidth: 0, border: 0, background: 'transparent', padding: 0, textAlign: 'left', fontFamily: FONT_STACK, cursor: 'pointer' }}
