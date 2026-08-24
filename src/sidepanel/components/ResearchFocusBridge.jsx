@@ -239,7 +239,8 @@ export default function ResearchFocusBridge() {
     const updateButton = () => {
       const researchVisible = !!document.querySelector('[aria-label="Research canvas tools"]');
       positionToggle(button, researchVisible);
-      button.textContent = enabledRef.current ? '◎' : '○';
+      const nextText = enabledRef.current ? '◎' : '○';
+      if (button.textContent !== nextText) button.textContent = nextText;
       button.style.color = enabledRef.current ? '#2563eb' : '#94a3b8';
       button.style.opacity = focusPresentRef.current || !enabledRef.current ? '1' : '.62';
       button.title = enabledRef.current
