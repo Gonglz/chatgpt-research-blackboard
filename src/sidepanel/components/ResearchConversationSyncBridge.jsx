@@ -1,13 +1,13 @@
 import { useEffect } from 'react';
 
-const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV3:';
+const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV4:';
+const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV4:';
 
 function conversationIdFromUrl(url) {
   try {
     const parsed = new URL(url || '');
     if (parsed.hostname !== 'chatgpt.com' && parsed.hostname !== 'chat.openai.com') return null;
-    const match = parsed.pathname.match(/\/c\/([a-zA-Z0-9-]+)/);
-    return match?.[1] || null;
+    return parsed.pathname.match(/\/c\/([a-zA-Z0-9-]+)/)?.[1] || null;
   } catch {
     return null;
   }
@@ -18,29 +18,27 @@ function isChatGPTUrl(url) {
     && (url.startsWith('https://chatgpt.com/') || url.startsWith('https://chat.openai.com/'));
 }
 
-async function migrateBootstrapState(conversationId) {
+async function migrateProducerState(conversationId) {
   if (!conversationId) return;
 
-  const stagedKey = `${BOOTSTRAP_PREFIX}new`;
-  const conversationKey = `${BOOTSTRAP_PREFIX}${conversationId}`;
-  const current = await chrome.storage.local.get([stagedKey, conversationKey]);
+  const stagedBootstrap = `${BOOTSTRAP_PREFIX}new`;
+  const stagedCount = `${REQUEST_COUNT_PREFIX}new`;
+  const chatBootstrap = `${BOOTSTRAP_PREFIX}chat:${conversationId}`;
+  const chatCount = `${REQUEST_COUNT_PREFIX}chat:${conversationId}`;
+  const current = await chrome.storage.local.get([stagedBootstrap, stagedCount, chatBootstrap, chatCount]);
+  const writes = {};
 
-  if (current?.[stagedKey] === true && current?.[conversationKey] !== true) {
-    await chrome.storage.local.set({ [conversationKey]: true });
-  }
+  if (current?.[stagedBootstrap] === true && current?.[chatBootstrap] !== true) writes[chatBootstrap] = true;
+  if (Number(current?.[stagedCount] || 0) > Number(current?.[chatCount] || 0)) writes[chatCount] = Number(current[stagedCount]);
+  if (Object.keys(writes).length) await chrome.storage.local.set(writes);
 
-  if (current?.[stagedKey] !== undefined) {
-    await chrome.storage.local.remove(stagedKey);
-  }
+  const removals = [];
+  if (current?.[stagedBootstrap] !== undefined) removals.push(stagedBootstrap);
+  if (current?.[stagedCount] !== undefined) removals.push(stagedCount);
+  if (removals.length) await chrome.storage.local.remove(removals);
 }
 
-/**
- * Lightweight new-chat lifecycle bridge.
- *
- * Research v3 no longer refreshes ChatGPT's conversation API automatically.
- * The DOM RGΔ bridge is the primary path, so a new chat only needs its one-time
- * producer bootstrap flag migrated from `new` to the assigned /c/<id> URL.
- */
+/** New-chat lifecycle bridge for Prompt v4 producer state. */
 export default function ResearchConversationSyncBridge() {
   useEffect(() => {
     let cancelled = false;
@@ -50,7 +48,6 @@ export default function ResearchConversationSyncBridge() {
 
     const tick = async () => {
       if (cancelled) return;
-
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.id || !isChatGPTUrl(tab.url)) {
@@ -68,10 +65,9 @@ export default function ResearchConversationSyncBridge() {
 
         const cameFromNewChat = stagedNewTabId === tab.id && lastConversationId == null;
         if (cameFromNewChat) {
-          await migrateBootstrapState(conversationId);
+          await migrateProducerState(conversationId);
           stagedNewTabId = null;
         }
-
         lastConversationId = conversationId;
       } catch (error) {
         console.debug('[ResearchSync] Lifecycle check failed:', error?.message || error);
@@ -79,10 +75,7 @@ export default function ResearchConversationSyncBridge() {
     };
 
     void tick();
-    timer = window.setInterval(() => {
-      void tick();
-    }, 1200);
-
+    timer = window.setInterval(() => { void tick(); }, 1200);
     return () => {
       cancelled = true;
       if (timer) window.clearInterval(timer);
