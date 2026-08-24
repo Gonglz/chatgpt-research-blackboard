@@ -3,7 +3,8 @@ import { loadScopedGraphRecord, writeScopedGraphRecord } from '../../shared/rese
 import {
   capturePreferredPositions,
   layoutResearchGraph,
-  researchStructuralSignature
+  researchStructuralSignature,
+  RESEARCH_LAYOUT_ALGORITHM
 } from '../utils/researchLayout';
 
 const STORAGE_PREFIXES = ['researchBlackboard:', 'researchProjectGraph:', 'researchConversationProject:'];
@@ -33,6 +34,7 @@ function isRelevantStorageChange(changes) {
  * - node/deepens structural changes -> ELK layout
  * - normal text/focus/selection/cross-edge changes -> no layout
  * - position-only changes -> remember as a soft user preference
+ * - layout algorithm upgrades -> one clean relayout, preserving true drag prefs
  */
 export default function ResearchLayoutBridge() {
   const timerRef = useRef(null);
@@ -61,8 +63,9 @@ export default function ResearchLayoutBridge() {
         const edges = graph.edges;
         const signature = researchStructuralSignature(nodes, edges);
         const previousLayoutState = graph.metadata?.layoutState || {};
+        const algorithmCurrent = previousLayoutState.algorithm === RESEARCH_LAYOUT_ALGORITHM;
 
-        if (previousLayoutState.structuralSignature === signature) {
+        if (algorithmCurrent && previousLayoutState.structuralSignature === signature) {
           const captured = capturePreferredPositions(nodes, previousLayoutState);
           if (!captured.changed) return;
 
@@ -79,7 +82,18 @@ export default function ResearchLayoutBridge() {
           return;
         }
 
-        const result = await layoutResearchGraph(nodes, edges, previousLayoutState);
+        // v1 interpreted canonical deepens direction backwards. On the v2
+        // migration we intentionally discard old ELK positions/backbone parents
+        // once, while retaining only explicit soft drag preferences.
+        const layoutInputState = algorithmCurrent
+          ? previousLayoutState
+          : {
+              preferredPositions: { ...(previousLayoutState?.preferredPositions || {}) },
+              backboneParentByNodeId: {},
+              lastAppliedPositions: {}
+            };
+
+        const result = await layoutResearchGraph(nodes, edges, layoutInputState);
         if (disposed) return;
 
         const now = Date.now();
@@ -89,7 +103,8 @@ export default function ResearchLayoutBridge() {
           metadata: {
             ...(graph.metadata || {}),
             layoutState: result.layoutState,
-            lastLayoutAt: now
+            lastLayoutAt: now,
+            layoutMigratedAt: algorithmCurrent ? graph.metadata?.layoutMigratedAt : now
           },
           updatedAt: now
         });
