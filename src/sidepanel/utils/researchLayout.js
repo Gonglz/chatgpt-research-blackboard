@@ -4,8 +4,9 @@ const elk = new ELK();
 
 export const RESEARCH_NODE_WIDTH = 200;
 export const RESEARCH_NODE_HEIGHT = 88;
+export const RESEARCH_LAYOUT_ALGORITHM = 'elk-layered-down-v2';
 
-function cleanRelation(edge) {
+export function cleanResearchRelation(edge) {
   return String(edge?.data?.relation || edge?.label || 'informs').trim().toLowerCase();
 }
 
@@ -44,7 +45,7 @@ function blend(a, b, keepA) {
 export function researchStructuralSignature(nodes = [], edges = []) {
   const nodeIds = nodes.map((node) => String(node.id)).sort();
   const deepens = edges
-    .filter((edge) => cleanRelation(edge) === 'deepens')
+    .filter((edge) => cleanResearchRelation(edge) === 'deepens')
     .map((edge) => `${edge.source}>${edge.target}`)
     .sort();
   return `n:${nodeIds.join(',')}|d:${deepens.join(',')}`;
@@ -64,6 +65,14 @@ function createsCycle(nodeId, parentId, parentByNodeId) {
 
 /**
  * Project the canonical graph into a low-volatility backbone.
+ *
+ * IMPORTANT semantic convention used by RGΔ:
+ *   child --deepens--> parent
+ *
+ * The canonical edge direction is intentionally preserved in storage. The
+ * layout projection reverses that relation to parent -> child so visual depth
+ * reads from top (broader) to bottom (more specific).
+ *
  * - deepens is the only structural relation.
  * - every node gets at most one primary parent for layout.
  * - a previously valid primary parent is retained when possible.
@@ -71,19 +80,19 @@ function createsCycle(nodeId, parentId, parentByNodeId) {
  */
 export function deriveSemanticBackbone(nodes = [], edges = [], previousParentByNodeId = {}) {
   const nodeIds = new Set(nodes.map((node) => String(node.id)));
-  const incoming = new Map();
+  const parentsByChild = new Map();
 
   const deepensEdges = edges
-    .filter((edge) => cleanRelation(edge) === 'deepens')
+    .filter((edge) => cleanResearchRelation(edge) === 'deepens')
     .filter((edge) => nodeIds.has(String(edge.source)) && nodeIds.has(String(edge.target)) && edge.source !== edge.target)
     .slice()
     .sort((a, b) => String(a.id || `${a.source}>${a.target}`).localeCompare(String(b.id || `${b.source}>${b.target}`)));
 
   for (const edge of deepensEdges) {
-    const target = String(edge.target);
-    const list = incoming.get(target) || [];
+    const childId = String(edge.source);
+    const list = parentsByChild.get(childId) || [];
     list.push(edge);
-    incoming.set(target, list);
+    parentsByChild.set(childId, list);
   }
 
   const parentByNodeId = {};
@@ -92,19 +101,19 @@ export function deriveSemanticBackbone(nodes = [], edges = [], previousParentByN
 
   for (const node of orderedNodes) {
     const nodeId = String(node.id);
-    const candidates = incoming.get(nodeId) || [];
+    const candidates = parentsByChild.get(nodeId) || [];
     if (!candidates.length) continue;
 
     const previousParent = previousParentByNodeId?.[nodeId] || null;
     const preferred = previousParent
-      ? candidates.find((edge) => String(edge.source) === String(previousParent))
+      ? candidates.find((edge) => String(edge.target) === String(previousParent))
       : null;
     const orderedCandidates = preferred
       ? [preferred, ...candidates.filter((edge) => edge !== preferred)]
       : candidates;
 
     for (const edge of orderedCandidates) {
-      const parentId = String(edge.source);
+      const parentId = String(edge.target);
       if (createsCycle(nodeId, parentId, parentByNodeId)) continue;
       parentByNodeId[nodeId] = parentId;
       backboneEdgeIds.add(String(edge.id || `${edge.source}>${edge.target}`));
@@ -177,8 +186,9 @@ function translatedTargets(nodes, elkChildren, layoutState) {
 }
 
 /**
- * Run ELK on the primary deepens backbone only. Cross-links are intentionally
- * excluded from ranking; React Flow still renders every canonical edge.
+ * Run ELK on the primary deepens backbone only. Canonical deepens edges are
+ * child -> parent, so layout edges are deliberately reversed to parent -> child.
+ * Cross-links are excluded from ranking; React Flow renders them contextually.
  */
 export async function layoutResearchGraph(nodes = [], edges = [], previousLayoutState = {}) {
   if (!nodes.length) {
@@ -188,7 +198,8 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
         structuralSignature: researchStructuralSignature(nodes, edges),
         backboneParentByNodeId: {},
         preferredPositions: {},
-        lastAppliedPositions: {}
+        lastAppliedPositions: {},
+        algorithm: RESEARCH_LAYOUT_ALGORITHM
       }
     };
   }
@@ -214,9 +225,9 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
       'elk.algorithm': 'layered',
       'elk.direction': 'DOWN',
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.spacing.nodeNode': '48',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '72',
-      'elk.layered.spacing.edgeNodeBetweenLayers': '28',
+      'elk.spacing.nodeNode': '56',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '78',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '30',
       'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.semiInteractive': 'true',
       'elk.padding': '[top=24,left=24,bottom=24,right=24]'
@@ -281,7 +292,7 @@ export async function layoutResearchGraph(nodes = [], edges = [], previousLayout
       preferredPositions,
       lastAppliedPositions,
       lastBackboneDepthByNodeId: backbone.depthByNodeId,
-      algorithm: 'elk-layered-down-v1'
+      algorithm: RESEARCH_LAYOUT_ALGORITHM
     }
   };
 }
@@ -328,6 +339,7 @@ export function layoutStateForImportedGraph(nodes = [], edges = [], previous = {
     preferredPositions: { ...(previous?.preferredPositions || {}) },
     lastAppliedPositions: positions,
     lastBackboneDepthByNodeId: backbone.depthByNodeId,
-    algorithm: 'imported-layout'
+    algorithm: RESEARCH_LAYOUT_ALGORITHM,
+    importedLayout: true
   };
 }
