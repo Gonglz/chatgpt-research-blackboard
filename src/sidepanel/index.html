@@ -1,11 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ChatGPT Graph</title>
+  <title>ChatGPT Research Blackboard</title>
   <style>
-    /* 确保页面填满整个视口 */
     html, body {
       width: 100%;
       height: 100%;
@@ -14,9 +13,7 @@
       overflow: hidden;
     }
 
-    /* Research Blackboard: compact detail surface.
-       React keeps the drawer as an overlay; these rules only reduce its footprint
-       and information chrome. Bottom placement is intentionally left roomier. */
+    /* Compact overlay detail surface. Bottom placement is intentionally roomier. */
     section[aria-label="Research node detail"][style*="top: 10px"] {
       width: clamp(265px, 30%, 325px) !important;
       border-radius: 10px !important;
