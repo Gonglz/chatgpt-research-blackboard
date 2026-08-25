@@ -9,7 +9,6 @@ const isWatch = process.argv.includes('--watch');
 const isRelease = process.argv.includes('--release');
 const isDev = isWatch && !isRelease;
 
-// 插件：Release 模式下移除调试日志，保留 error 和 warn
 const stripDebugLogsPlugin = {
   name: 'strip-debug-logs',
   setup(build) {
@@ -18,9 +17,7 @@ const stripDebugLogsPlugin = {
     build.onLoad({ filter: /\.jsx?$/ }, async (args) => {
       const fs = await import('fs');
       let contents = await fs.promises.readFile(args.path, 'utf8');
-
       contents = contents.replace(/console\.(log|debug|info)\s*\([^;]*\);?/g, '');
-
       return {
         contents,
         loader: args.path.endsWith('.jsx') ? 'jsx' : 'js'
@@ -38,7 +35,7 @@ const commonOptions = {
   minify: isRelease,
   plugins: [stripDebugLogsPlugin],
   define: {
-    'process.env.NODE_ENV': isDev ? '"development"' : '"production"',
+    'process.env.NODE_ENV': isDev ? '"development"' : '"production"'
   },
   logLevel: 'info'
 };
@@ -49,7 +46,7 @@ const reactOptions = {
     '.js': 'jsx',
     '.jsx': 'jsx'
   },
-  jsx: 'automatic',
+  jsx: 'automatic'
 };
 
 const builds = [
@@ -58,15 +55,11 @@ const builds = [
     entryPoints: ['src/content/index.js'],
     outfile: 'dist/content.js'
   },
-  // Research Blackboard producer: injects the hidden RBREQ contract only while
-  // Research view is active. Kept separate from the upstream content bundle.
   {
     ...commonOptions,
     entryPoints: ['src/content/research-producer.js'],
     outfile: 'dist/research-producer.js'
   },
-  // Selection v2 captures the Range immediately on mouseup, before ChatGPT's
-  // native selection UI can collapse or replace window.getSelection().
   {
     ...commonOptions,
     entryPoints: ['src/content/research-selection-v2.js'],
@@ -76,16 +69,6 @@ const builds = [
     ...commonOptions,
     entryPoints: ['src/background/index.js'],
     outfile: 'dist/background.js'
-  },
-  {
-    ...commonOptions,
-    entryPoints: ['src/popup/popup.js'],
-    outfile: 'dist/popup.js'
-  },
-  {
-    ...commonOptions,
-    entryPoints: ['src/setup/setup.js'],
-    outfile: 'dist/setup.js'
   },
   {
     ...reactOptions,
@@ -103,17 +86,13 @@ async function build() {
   try {
     if (isWatch) {
       console.log('Watching for changes...');
-      const contexts = await Promise.all(
-        builds.map(options => esbuild.context(options))
-      );
-      await Promise.all(contexts.map(ctx => ctx.watch()));
+      const contexts = await Promise.all(builds.map((options) => esbuild.context(options)));
+      await Promise.all(contexts.map((context) => context.watch()));
     } else {
-      await Promise.all(builds.map(options => esbuild.build(options)));
-      if (isRelease) {
-        console.log('√ Release build completed! (debug logs removed, minified)');
-      } else {
-        console.log('√ Build completed!');
-      }
+      await Promise.all(builds.map((options) => esbuild.build(options)));
+      console.log(isRelease
+        ? '√ Release build completed! (debug logs removed, minified)'
+        : '√ Build completed!');
     }
   } catch (error) {
     console.error('× Build failed:', error);
