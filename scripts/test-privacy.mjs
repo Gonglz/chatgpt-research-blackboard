@@ -8,7 +8,7 @@ const read = (path) => readFileSync(pathUrl(path), 'utf8');
 const manifest = JSON.parse(read('manifest.json'));
 const permissions = new Set(manifest.permissions || []);
 
-for (const permission of ['webRequest', 'tabs', 'scripting']) {
+for (const permission of ['webRequest', 'tabs']) {
   assert.equal(
     permissions.has(permission),
     false,
@@ -18,8 +18,8 @@ for (const permission of ['webRequest', 'tabs', 'scripting']) {
 
 assert.deepEqual(
   [...permissions].sort(),
-  ['sidePanel', 'storage'].sort(),
-  'manifest permissions should stay at the minimum Research Blackboard set'
+  ['sidePanel', 'scripting', 'storage'].sort(),
+  'manifest permissions should stay at the minimum functional Research Blackboard set'
 );
 
 assert.equal(
@@ -42,7 +42,29 @@ const tabMessaging = read('src/shared/tab-messaging.js');
 assert.equal(
   /chrome\.scripting|executeScript/.test(tabMessaging),
   false,
-  'tab messaging must not dynamically inject content scripts'
+  'tab messaging must not dynamically inject content scripts as a fallback'
+);
+
+const sourceJump = read('src/sidepanel/utils/researchSourceJump.js');
+assert.equal(
+  /chrome\.scripting\.executeScript/.test(sourceJump),
+  true,
+  'source navigation currently relies on scripting for exact DOM source location'
+);
+assert.equal(
+  permissions.has('scripting'),
+  true,
+  'manifest must declare scripting while source navigation uses chrome.scripting.executeScript'
+);
+assert.equal(
+  /jumpToResearchHighlightSource/.test(sourceJump) && /research-blackboard-exact-highlight/.test(sourceJump),
+  true,
+  'exact Highlight source jump and temporary source highlighting must stay present'
+);
+assert.equal(
+  /chrome\.tabs\.update/.test(sourceJump),
+  true,
+  'project-aware cross-chat source navigation must stay present'
 );
 
 const constants = read('src/shared/constants.js');
@@ -98,4 +120,4 @@ assert.equal(
   'build must not reference the removed legacy content entrypoint'
 );
 
-console.log('✓ privacy boundary regression tests passed');
+console.log('✓ privacy + source-navigation regression tests passed');
