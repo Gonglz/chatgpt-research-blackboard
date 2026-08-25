@@ -3,17 +3,10 @@
  */
 
 // 扩展名称
-export const EXTENSION_NAME = 'ChatGPT Graph';
+export const EXTENSION_NAME = 'ChatGPT Research Blackboard';
 
 // 日志前缀
 export const LOG_PREFIX = `[${EXTENSION_NAME}]`;
-
-// API 端点
-export const API_ENDPOINTS = {
-  CONVERSATION: '/backend-api/conversation',
-  CONVERSATIONS: '/backend-api/conversations',
-  ME: '/backend-api/me'
-};
 
 // 消息类型
 export const MESSAGE_TYPES = {
@@ -29,11 +22,6 @@ export const MESSAGE_TYPES = {
   GET_ALL_CONVERSATIONS: 'GET_ALL_CONVERSATIONS',
   REFRESH_DATA: 'REFRESH_DATA',
 
-  // Token 相关
-  GET_TOKEN_STATUS: 'GET_TOKEN_STATUS',
-  CLEAR_TOKEN: 'CLEAR_TOKEN',
-  TOKEN_UPDATED: 'TOKEN_UPDATED',
-
   // Service Worker → Side Panel
   DATA_READY: 'DATA_READY',
   UPDATE_NOTIFICATION: 'UPDATE_NOTIFICATION',
@@ -41,7 +29,7 @@ export const MESSAGE_TYPES = {
   // Side Panel → Content Script (via tabs.sendMessage)
   SCROLL_TO_MESSAGE: 'SCROLL_TO_MESSAGE',
 
-  // Popup / Floating UI
+  // Floating UI
   TOGGLE_FLOATING_PANEL: 'TOGGLE_FLOATING_PANEL',
   UPDATE_FLOATING_PANEL_STATE: 'UPDATE_FLOATING_PANEL_STATE',
   ASSISTANT_STREAM_SETTINGS_CHANGED: 'ASSISTANT_STREAM_SETTINGS_CHANGED'
@@ -89,10 +77,10 @@ export const DEFAULT_COLLAPSE_SETTINGS = {
 
 // 配置
 export const CONFIG = {
-  // API 调用延迟（毫秒）
+  // 页面 / DOM 稳定等待时间（毫秒）
   API_DELAY: 1000,
 
-  // 重试次数
+  // 兼容层重试次数
   MAX_RETRIES: 3,
 
   // 缓存过期时间（毫秒）
