@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-research-blackboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A semantic research graph sidecar for ChatGPT with automatic graph maintenance, highlights, source jumps, and export.",
   "type": "module",
   "scripts": {
