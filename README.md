@@ -6,6 +6,8 @@
 
 它不是把聊天记录重新画成一棵树，而是维护“研究本身”的结构：分析、比较、问题、综合、判断、Highlight，以及这些研究状态之间的关系。
 
+![ChatGPT Research Blackboard 界面](./docs/pic/blackboard.png)
+
 > **状态：** 可用 MVP / Public Pre-release。当前主要面向桌面 Chromium 浏览器和 `chatgpt.com`。
 
 > **Fork 说明：** 本仓库是 [`Robbings/chatgpt-graph-navigator`](https://github.com/Robbings/chatgpt-graph-navigator) 的 fork 和衍生项目。Research Blackboard 复用了部分上游 Chrome 扩展基础设施、ChatGPT DOM 观察、conversation cache、消息锚定和跳转能力，同时把主要产品模型和 Sidepanel 重构为语义研究图。详见 [NOTICE.md](./NOTICE.md)。
