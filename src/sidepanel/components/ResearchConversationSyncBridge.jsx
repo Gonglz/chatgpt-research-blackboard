@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 
-const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV4:';
-const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV4:';
+const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV7:';
+const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV7:';
 
 function conversationIdFromUrl(url) {
   try {
@@ -38,7 +38,7 @@ async function migrateProducerState(conversationId) {
   if (removals.length) await chrome.storage.local.remove(removals);
 }
 
-/** New-chat lifecycle bridge for Prompt v4 producer state. */
+/** Migrate producer counters when ChatGPT turns a staged new chat into /c/<id>. */
 export default function ResearchConversationSyncBridge() {
   useEffect(() => {
     let cancelled = false;
