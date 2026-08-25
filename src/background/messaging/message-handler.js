@@ -5,7 +5,6 @@
 import { MESSAGE_TYPES } from '../../shared/constants.js';
 import { sendMessageToTabWithFallback } from '../../shared/tab-messaging.js';
 import { db } from '../database/db.js';
-import { getTokenStatus, clearToken } from '../auth/token-capture.js';
 
 /**
  * 设置消息监听器
@@ -45,10 +44,6 @@ async function handleMessage(message, sender) {
       return await handleScrollToMessage(payload);
     case MESSAGE_TYPES.ERROR:
       return await handleError(payload, sender);
-    case MESSAGE_TYPES.GET_TOKEN_STATUS:
-      return await handleGetTokenStatus();
-    case MESSAGE_TYPES.CLEAR_TOKEN:
-      return await handleClearToken();
     default:
       throw new Error(`Unknown message type: ${type}`);
   }
@@ -118,7 +113,7 @@ async function handleIncrementalUpdate(updateData) {
       newNode: updateData.newNode,
       stats: {
         nodes: updateData.updatedNodes?.length || 0,
-        edges: updateData.updatedEdges?.length || 0,
+        edges: updateData.updatedEdges || 0,
         rounds: updateData.updatedRounds?.length || 0,
         branches: updateData.updatedBranches?.length || 0
       }
@@ -223,17 +218,6 @@ async function handleGetAllConversations() {
 async function handleError(errorData, sender) {
   console.error('[Background] Error from content script:', errorData);
   return { acknowledged: true };
-}
-
-async function handleGetTokenStatus() {
-  console.log('[Background] Getting token status');
-  return await getTokenStatus();
-}
-
-async function handleClearToken() {
-  console.log('[Background] Clearing token');
-  const success = await clearToken();
-  return { success };
 }
 
 async function handleScrollToMessage(payload) {
