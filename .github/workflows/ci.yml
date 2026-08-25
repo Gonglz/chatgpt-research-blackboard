@@ -20,12 +20,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      # The committed lockfile still comes from the upstream fork and is not yet
-      # synchronized with all Research Blackboard dependencies. Use npm install
-      # until a regenerated lockfile is committed, then switch this to npm ci.
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Run regression tests
         run: npm test
