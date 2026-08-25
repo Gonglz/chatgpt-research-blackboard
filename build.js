@@ -52,7 +52,7 @@ const reactOptions = {
 const builds = [
   {
     ...commonOptions,
-    entryPoints: ['src/content/index.js'],
+    entryPoints: ['src/content/research-runtime.js'],
     outfile: 'dist/content.js'
   },
   {

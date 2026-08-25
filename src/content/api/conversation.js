@@ -1,139 +1,147 @@
 /**
- * ChatGPT API 调用模块
+ * Conversation bootstrap from the current ChatGPT DOM.
+ *
+ * The inherited extension fetched ChatGPT's private/internal conversation API
+ * with a captured bearer token. Research Blackboard no longer does that. This
+ * module preserves the old function names temporarily, but reconstructs the
+ * minimal mapping shape from message containers already rendered in the page.
  */
 
-import { API_ENDPOINTS } from '../../shared/constants.js';
-import { log, delay } from '../../shared/utils.js';
-import { buildAuthHeaders, clearAuthCache } from '../auth/token-manager.js';
+import { log } from '../../shared/utils.js';
+import { getAllMessagesFromDOM } from '../extractors/message-extractor.js';
 
-function apiError(message, retryable = true) {
-  const error = new Error(message);
-  error.retryable = retryable;
-  return error;
+const DOM_WAIT_TIMEOUT_MS = 6000;
+const DOM_STABLE_INTERVAL_MS = 250;
+const DOM_STABLE_PASSES = 2;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * 获取对话完整数据
- * @param {string} conversationId - 对话 ID
- * @returns {Promise<Object>} 对话数据（包含 mapping）
- * @throws {Error} API 调用失败
- */
-async function fetchConversation(conversationId, isRetry = false) {
-  log('info', 'API', `Fetching conversation: ${conversationId}${isRetry ? ' (retry)' : ''}`);
+function toMappingNode(message, fallbackParent = null, order = 0) {
+  const id = message.id;
+  const timestamp = Number(message.timestamp) || (Date.now() + order);
 
-  try {
-    const response = await fetch(
-      `${API_ENDPOINTS.CONVERSATION}/${conversationId}`,
-      {
-        method: 'GET',
-        credentials: 'include',
-        headers: buildAuthHeaders()
+  return {
+    id,
+    message: {
+      id,
+      author: {
+        role: message.role
+      },
+      content: {
+        content_type: 'text',
+        parts: [message.content || '']
+      },
+      create_time: timestamp / 1000,
+      metadata: {
+        source: 'dom',
+        dom_snapshot: true,
+        timestamp,
+        turn_number: message.turnNumber ?? null,
+        stream_group_key: message.streamGroupKey || null,
+        stream_group_part_index: message.streamGroupPartIndex ?? null,
+        stream_group_part_count: message.streamGroupPartCount ?? null,
+        stream_part_ids: [id]
       }
+    },
+    parent: message.parent || fallbackParent || null,
+    children: []
+  };
+}
+
+function buildMapping(messages) {
+  const mapping = {};
+  const knownIds = new Set(messages.map((message) => message.id).filter(Boolean));
+
+  messages.forEach((message, index) => {
+    if (!message?.id) return;
+
+    const previousId = index > 0 ? messages[index - 1]?.id || null : null;
+    const declaredParent = message.parent && knownIds.has(message.parent)
+      ? message.parent
+      : null;
+
+    mapping[message.id] = toMappingNode(
+      message,
+      declaredParent || previousId,
+      index
     );
+  });
 
-    if (!response.ok) {
-      let errorDetail = '';
-      let errorData = null;
-
-      try {
-        errorData = await response.json();
-        errorDetail = JSON.stringify(errorData);
-      } catch (e) {
-        errorDetail = await response.text();
-      }
-
-      if (response.status === 401) {
-        log('warn', 'API', 'Authentication failed (401), clearing auth cache');
-        clearAuthCache();
-
-        if (!isRetry) {
-          log('info', 'API', 'Retrying once with fresh auth info...');
-          await delay(500);
-          return await fetchConversation(conversationId, true);
-        }
-
-        throw apiError(
-          'Authentication failed (401). Please ensure you are logged into ChatGPT and refresh the page.',
-          false
-        );
-      }
-
-      const detail = errorData?.detail || {};
-      const nonRetryable = detail?.can_retry === false
-        || detail?.code === 'conversation_not_found'
-        || detail?.code === 'conversation_inaccessible'
-        || response.status === 404;
-
-      if (detail?.code === 'conversation_not_found') {
-        log('warn', 'API', `Conversation not found: ${conversationId}`);
-      } else if (detail?.code === 'conversation_inaccessible') {
-        log('warn', 'API', `Conversation inaccessible to API: ${conversationId}`);
-      } else {
-        log('error', 'API', `HTTP ${response.status}:`, errorDetail);
-      }
-
-      throw apiError(
-        `API Error: ${response.status} - ${errorDetail}`,
-        !nonRetryable
-      );
+  Object.values(mapping).forEach((node) => {
+    if (!node.parent || !mapping[node.parent]) {
+      node.parent = null;
+      return;
     }
 
-    const data = await response.json();
+    const parentChildren = mapping[node.parent].children;
+    if (!parentChildren.includes(node.id)) {
+      parentChildren.push(node.id);
+    }
+  });
 
-    log('info', 'API', 'Conversation loaded successfully', {
-      id: data.id || conversationId,
-      title: data.title,
-      mappingSize: Object.keys(data.mapping || {}).length
-    });
+  return mapping;
+}
 
-    return data;
-  } catch (error) {
-    log('error', 'API', 'Failed to fetch conversation:', error);
-    throw error;
+async function waitForStableDOMMessages() {
+  const startedAt = Date.now();
+  let previousSignature = '';
+  let stablePasses = 0;
+  let latestMessages = [];
+
+  while (Date.now() - startedAt < DOM_WAIT_TIMEOUT_MS) {
+    latestMessages = getAllMessagesFromDOM();
+
+    const signature = latestMessages
+      .map((message) => `${message.id}:${message.role}:${(message.content || '').length}`)
+      .join('|');
+
+    if (latestMessages.length > 0 && signature === previousSignature) {
+      stablePasses += 1;
+      if (stablePasses >= DOM_STABLE_PASSES) {
+        return latestMessages;
+      }
+    } else {
+      stablePasses = 0;
+      previousSignature = signature;
+    }
+
+    await sleep(DOM_STABLE_INTERVAL_MS);
   }
+
+  return latestMessages;
 }
 
 /**
- * 带重试的获取对话数据。
- * 服务端明确 can_retry=false / conversation_inaccessible / 404 时立即停止，
- * 避免同一个无效请求连续轰三遍。
- * @param {string} conversationId - 对话 ID
- * @param {number} maxRetries - 最大尝试次数
- * @returns {Promise<Object>}
+ * Compatibility name retained for callers. No network request is made.
  */
-export async function fetchConversationWithRetry(conversationId, maxRetries = 3) {
-  let lastError = null;
+export async function fetchConversationWithRetry(conversationId) {
+  log('info', 'DOMSnapshot', `Building conversation snapshot from DOM: ${conversationId}`);
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await fetchConversation(conversationId);
-    } catch (error) {
-      lastError = error;
+  const messages = await waitForStableDOMMessages();
+  const mapping = buildMapping(messages);
+  const now = Date.now() / 1000;
 
-      if (error?.retryable === false || attempt >= maxRetries) {
-        throw error;
-      }
+  log('info', 'DOMSnapshot', 'Conversation snapshot built', {
+    conversationId,
+    messageCount: messages.length,
+    mappingSize: Object.keys(mapping).length
+  });
 
-      log('warn', 'API', `Retry ${attempt}/${maxRetries} failed:`, error.message);
-      await delay(1000);
-    }
-  }
-
-  throw lastError;
+  return {
+    id: conversationId,
+    title: document.title || 'Research Blackboard',
+    create_time: null,
+    update_time: now,
+    mapping,
+    source: 'dom'
+  };
 }
 
 /**
- * 检查 API 是否可用
- * @returns {Promise<boolean>}
+ * There is no internal API dependency in DOM-only mode.
  */
 export async function checkAPIAvailability() {
-  try {
-    const response = await fetch(API_ENDPOINTS.ME, {
-      credentials: 'include'
-    });
-    return response.ok;
-  } catch (error) {
-    log('warn', 'API', 'API availability check failed:', error);
-    return false;
-  }
+  return true;
 }

@@ -2,29 +2,35 @@
 
 **English** | [简体中文](./PRIVACY_ZH.md)
 
-ChatGPT Research Blackboard is a browser extension that runs alongside ChatGPT. This document describes the actual data behavior of the current source tree, including the `v0.1.0` pre-release.
+ChatGPT Research Blackboard is a browser extension that runs alongside ChatGPT. This document describes the data behavior of the current source tree after the `v0.1.0` security cleanup.
 
 This project does **not** operate a developer-owned cloud backend for collecting Research Blackboard data.
+
+> Historical note: the published `v0.1.0` pre-release inherited a ChatGPT token-capture/internal-API compatibility layer from the upstream fork. That path has been removed from the current source tree and is not part of the next release candidate.
 
 ## Data handled by the extension
 
 Depending on the features a user actually uses, the extension may handle:
 
-- ChatGPT conversation content visible to the extension, message IDs, conversation IDs, and message-order metadata;
+- ChatGPT conversation content currently rendered and visible to the extension;
+- message IDs, conversation IDs, and message-order metadata;
 - Research Nodes, semantic edges, checkpoints, keywords, node positions, and layout metadata;
 - saved Highlights, quoted text, and user notes;
 - quote/message anchors used for source navigation;
 - Research Project membership and conversation provenance;
-- Research Blackboard data explicitly imported or exported by the user;
-- ChatGPT authentication/account metadata used by the inherited compatibility layer described below.
+- Research Blackboard data explicitly imported or exported by the user.
+
+The current source does **not** capture or store ChatGPT Bearer access tokens, read ChatGPT authentication cookies for API access, or call ChatGPT private `/backend-api/` conversation endpoints.
 
 ## Local storage
 
-Research Blackboard primarily stores state in browser-local extension storage (`chrome.storage.local`), including graph state, Highlights, notes, project/provenance metadata, layout/UI state, and compatibility auth state.
+Research Blackboard primarily stores state in browser-local extension storage (`chrome.storage.local`), including graph state, Highlights, notes, project/provenance metadata, layout state, and local UI state.
 
-The inherited conversation compatibility layer may also cache ChatGPT conversation data in extension-local IndexedDB.
+The inherited conversation cache may also keep DOM-derived conversation snapshots in extension-local IndexedDB for compatibility with source navigation and refresh behavior.
 
 The project does not automatically upload these local stores to a developer-operated server. Data can remain in the current browser profile until it is cleared by the extension, the user, or the browser environment.
+
+When the current version starts, it also removes legacy `v0.1.0` auth-storage keys (`accessToken`, `tokenTimestamp`, `tokenSource`, and `tokenInfo`) if they exist.
 
 ## Research Mode protocol sent to ChatGPT
 
@@ -47,49 +53,39 @@ When the user selects text in a ChatGPT assistant response and chooses `★ Save
 
 Saved Highlights are not sent to a separate project-operated server.
 
-## Inherited conversation-cache/auth compatibility layer
+User-initiated source navigation uses the Chrome `scripting` API on the permitted ChatGPT hosts to locate the corresponding rendered message or exact quoted text, scroll it into view, and temporarily highlight it. This scripting path is not used to capture credentials or call ChatGPT private APIs.
 
-This repository is a fork of `Robbings/chatgpt-graph-navigator` and `v0.1.0` still contains an inherited compatibility layer used for explicit Refresh/fallback and conversation caching.
+## DOM-only conversation compatibility
 
-That layer currently can:
+The current source uses a DOM-only compatibility path for conversation snapshots and manual Refresh:
 
-- use `webRequest` to observe requests sent to ChatGPT;
-- capture a ChatGPT Bearer access token from request headers;
-- store the access token, timestamp, and related metadata in `chrome.storage.local`;
-- read accessible ChatGPT page cookie values such as `_account` and `oai-did`;
-- send authenticated requests to ChatGPT's own internal conversation endpoints when fallback/refresh behavior is invoked.
+- it reads messages already rendered in the current ChatGPT page;
+- it reconstructs a minimal local conversation mapping;
+- it does not make authenticated private ChatGPT API requests;
+- it does not use hidden ChatGPT branch controls to reveal non-rendered alternate branches.
 
-**The current code is not designed to send captured ChatGPT credentials to a developer-operated third-party server.**
-
-This is nevertheless security-sensitive behavior. The current compatibility code stores the captured access token in extension-local storage and does not add a separate application-level at-rest encryption layer.
-
-## Chrome Web Store readiness
-
-The current `v0.1.0` GitHub pre-release is **not yet recommended for Chrome Web Store submission**.
-
-The primary privacy blocker is that the inherited token-capture path is initialized in the background without a dedicated explicit opt-in / informed-consent flow before capture begins.
-
-Before a Chrome Web Store submission, the recommended direction is to:
-
-1. remove the token-capture / `webRequest` compatibility layer entirely if possible, or gate it behind explicit informed consent;
-2. re-audit `tabs`, `scripting`, `webRequest`, and host permissions so that only the narrowest permissions necessary for current user-facing features remain;
-3. accurately disclose handling of ChatGPT page content, conversation text, Highlights, and conversation/message identifiers in the Store listing and Privacy practices tab;
-4. redesign token storage and lifecycle if authentication handling remains necessary.
+This reduces credential and account-risk surface, but it means a snapshot can only contain conversation material available in the current DOM. Very long conversations or hidden alternate branches may therefore be incomplete in the compatibility cache.
 
 ## Browser permissions
 
 The current manifest requests:
 
-- `storage` — local Research Blackboard and compatibility state;
+- `storage` — local Research Blackboard state and DOM-derived compatibility cache state;
 - `sidePanel` — the Research Blackboard side panel;
-- `tabs` — follow the active ChatGPT conversation and support cross-chat source navigation;
-- `scripting` — inherited/compatibility behavior;
-- `webRequest` — inherited ChatGPT token-capture/compatibility behavior.
+- `scripting` — explicit source-location and exact Highlight navigation on the permitted ChatGPT pages.
 
-Host access is currently limited to:
+Host access is limited to:
 
 - `https://chatgpt.com/*`
 - `https://chat.openai.com/*`
+
+The current source does **not** request `webRequest` or broad `tabs` permission. `scripting` is retained because the current source-jump implementation uses `chrome.scripting.executeScript()` for user-initiated DOM location/highlighting. It is not used for request-header interception or dynamic content-script recovery.
+
+Because host access is required for the extension's core purpose, the content scripts can read and modify ChatGPT pages on those hosts. They are not granted host access to unrelated websites.
+
+## Extension reload behavior
+
+The extension does not dynamically inject `dist/content.js` after an extension reload or update. If an already-open ChatGPT page has an invalidated extension context, refresh that ChatGPT tab to restore the manifest-declared content scripts.
 
 ## Third-party sharing and commercial use
 
@@ -106,6 +102,8 @@ Use of user data should remain limited to the extension's disclosed single purpo
 
 ChatGPT Research Blackboard's use of user data will comply with the Chrome Web Store User Data Policy, including the Limited Use requirements. User data will not be sold, used for personalized advertising, or used for purposes unrelated to the extension's disclosed single purpose.
 
+The removal of credential interception plus `webRequest` and broad `tabs` permissions addresses the primary privacy blocker identified in `v0.1.0`. The retained `scripting` permission is scoped by ChatGPT host permissions and supports explicit source navigation/highlighting. A separate Chrome Web Store submission review is still required before claiming store readiness.
+
 ## Exports
 
 When the user exports `.rbb.json`, Markdown, JSON Canvas, or PNG, the extension creates a local file. Exported files may contain research titles, checkpoints, quotes, notes, and conversation/message source metadata. The user controls how those files are stored or shared after export.
@@ -116,7 +114,7 @@ Research Projects may combine semantic nodes from multiple ChatGPT conversations
 
 ## Security and limitations
 
-ChatGPT's DOM and internal request behavior can change. Source navigation, DOM parsing, and compatibility refresh logic are best-effort and may break when ChatGPT changes its interface.
+ChatGPT's DOM can change. Source navigation, DOM parsing, and DOM-derived refresh logic are best-effort and may break when ChatGPT changes its interface.
 
 Do not use extension-local data as the only copy of important research. Use `.rbb.json` export for backups when the data matters.
 

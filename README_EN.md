@@ -8,7 +8,7 @@ Instead of treating a long chat as one transcript, Research Blackboard maintains
 
 > **Status:** usable MVP / public pre-release. Desktop Chromium, currently targeting `chatgpt.com`.
 
-> **Fork notice:** this repository is a fork and derivative work of [`Robbings/chatgpt-graph-navigator`](https://github.com/Robbings/chatgpt-graph-navigator). It reuses parts of the upstream Chrome-extension, ChatGPT DOM observation, conversation-cache, message anchoring, and navigation substrate while replacing the primary product model and side-panel UI with a semantic research graph. See [NOTICE.md](./NOTICE.md).
+> **Fork notice:** this repository is a fork and derivative work of [`Robbings/chatgpt-graph-navigator`](https://github.com/Robbings/chatgpt-graph-navigator). It reuses parts of the upstream Chrome-extension infrastructure, ChatGPT DOM observation, conversation cache, message anchoring, and navigation substrate while replacing the primary product model and side-panel UI with a semantic research graph. See [NOTICE.md](./NOTICE.md).
 
 > **Unofficial project:** not affiliated with, endorsed by, or sponsored by OpenAI.
 
@@ -20,6 +20,7 @@ Instead of treating a long chat as one transcript, Research Blackboard maintains
 - **Research-first layout:** ELK layered layout, `deepens` backbone, collision avoidance, soft drag preferences, curved routing.
 - **Anchor-aware context:** explicit returns to older topics outrank mere recency.
 - **Highlights:** save selected answer text to the best-matching node; annotate, reorder, move, delete, promote/demote, and jump back to the source quote.
+- **Source jumps:** double-click a node to return to its rendered source message; Highlight Source attempts exact quote location with temporary highlighting.
 - **Compact detail surface:** checkpoint, keywords, highlights, relations, and source controls without expanding canvas nodes.
 - **Research Projects:** experimental project-level canonical graph with per-conversation provenance.
 - **Export:** `.rbb.json`, Markdown, JSON Canvas, full-graph PNG.
@@ -61,11 +62,13 @@ more specific child
 ### Recommended: GitHub Release
 
 1. Open the [Releases page](https://github.com/Gonglz/chatgpt-research-blackboard/releases).
-2. Download `chatgpt-research-blackboard-v0.1.0.zip` from the latest pre-release.
+2. Download `chatgpt-research-blackboard-v0.1.1.zip` from the latest pre-release.
 3. Extract the ZIP.
 4. Open `chrome://extensions/`.
 5. Enable **Developer mode**.
 6. Click **Load unpacked** and select the extracted folder containing `manifest.json`.
+
+> `v0.1.1` is the recommended pre-release. Do not continue using the old `v0.1.0` package; v0.1.1 removes the inherited ChatGPT token-capture/private-API compatibility path.
 
 ### From source
 
@@ -91,22 +94,68 @@ Then open `chrome://extensions/`, enable **Developer mode**, choose **Load unpac
 
 Product principle: **AI maintains structure by default; the user mainly corrects or curates.**
 
+## Highlights and source jumps
+
+While the side panel is open, select text in a ChatGPT assistant response:
+
+- `★ Save` saves it to the best-matching existing node.
+- `+ Node` creates a new Research Node from the selection.
+
+Highlights support notes, reordering, moving, deletion, promotion to a node, and demotion back to a Highlight.
+
+Source behavior:
+
+- double-clicking a Research Node returns to the corresponding currently rendered ChatGPT message and briefly outlines it;
+- `↗ Source` on a Highlight attempts to locate the exact quote and highlights it for about five seconds.
+
+Source location is guaranteed only for content available in the currently rendered DOM. Cross-chat source jump remains experimental and is not a stable guarantee in this release.
+
+## Research Projects
+
+```text
+Project
+└─ canonical semantic graph
+   ├─ Node A
+   │  └─ sources: Chat 1, Chat 3
+   └─ Edge X
+      └─ sources: Chat 2
+```
+
+Nodes belong to the Project; provenance belongs to individual conversations. The Project data model is implemented, while cross-chat source navigation still needs more real-world validation.
+
 ## Privacy and security
 
 Read [PRIVACY.md](./PRIVACY.md) and the [Chinese privacy note](./PRIVACY_ZH.md).
 
-Important facts about the current `v0.1.0` pre-release:
+Important facts about `v0.1.1`:
 
-- Research Graph state and Highlights are primarily stored in `chrome.storage.local`.
-- Conversation compatibility data may also be cached locally in IndexedDB.
+- Research Graph state, Highlights, and Project metadata are primarily stored in `chrome.storage.local`.
+- DOM-derived conversation snapshots may also be cached locally in IndexedDB.
 - The project operates **no developer-owned cloud backend** for Research Blackboard data.
-- While Research Mode is active, the hidden RBREQ context is sent to ChatGPT/OpenAI as part of the normal conversation request.
-- The inherited compatibility layer can observe ChatGPT request traffic, capture a ChatGPT access token, and store it locally for explicit refresh/fallback paths.
-- The project does not intentionally send captured credentials or research data to a developer-operated third-party server.
+- While Research Mode is active, hidden RBREQ context is sent to ChatGPT/OpenAI as part of the normal conversation request.
+- It **does not capture or store ChatGPT Bearer access tokens**.
+- It **does not read ChatGPT authentication cookies for API access**.
+- It **does not call ChatGPT private `/backend-api/` conversation endpoints**.
+- The manifest no longer requests `webRequest` or broad `tabs` permission.
+- `scripting` remains only for explicit user-initiated source-location and exact-Highlight DOM highlighting on the permitted ChatGPT hosts.
+
+On startup, v0.1.1 also removes legacy v0.1.0 token-storage keys if they still exist in `chrome.storage.local`.
+
+### DOM-only trade-off
+
+Manual Refresh and the compatibility snapshot are reconstructed from the current ChatGPT DOM:
+
+- currently rendered conversation content is supported;
+- hidden alternative branches are no longer read through private APIs;
+- very long conversations may have incomplete snapshots if ChatGPT virtualizes or lazily renders older messages.
+
+This trade-off intentionally reduces credential and account-risk surface.
 
 ### Chrome Web Store readiness
 
-The current pre-release is **not yet recommended for Chrome Web Store submission**. The inherited automatic access-token capture starts without a dedicated opt-in flow and requires `webRequest`; that should be removed or redesigned behind explicit informed consent before a store submission. The requested permissions should also be re-audited for minimum scope.
+v0.1.1 removes the primary privacy blockers found in v0.1.0: token interception, `webRequest`, and private conversation API access.
+
+It is still not labeled Chrome Web Store ready. A separate review of Store listing disclosures, Privacy practices, and permission justification is required before submission.
 
 ## Automatic graph maintenance
 
@@ -136,11 +185,19 @@ npm test
 npm run build
 ```
 
-Regression tests cover the RGΔ parser/reducer plus critical layout invariants: canonical `deepens` direction, backbone parent selection, vertical rank, cycle handling, and same-rank collision avoidance.
+Regression coverage includes:
 
-GitHub Actions uses the committed lockfile and runs `npm ci`, tests, and build on pushes and pull requests.
+- RGΔ parser/reducer behavior;
+- Synthesis/Judgment parsing;
+- canonical `deepens` direction;
+- backbone parent/depth selection;
+- cycle handling, vertical rank, same-rank collision avoidance;
+- privacy boundaries preventing `webRequest`, token capture, and `/backend-api/` access;
+- source-jump / exact-Highlight dependency on `scripting`, preventing accidental permission removal from breaking those features again.
 
-`npm audit --omit=dev` reports zero production dependency vulnerabilities for the current release candidate. The remaining audit item is an esbuild development-tool advisory and is intentionally not force-upgraded in `v0.1.0`.
+GitHub Actions runs `npm ci`, tests, and build on pushes and pull requests.
+
+`npm audit --omit=dev` reports zero production dependency vulnerabilities for the current release candidate. The remaining audit item is an esbuild development-tool advisory and is intentionally not force-upgraded.
 
 ## Architecture
 
@@ -148,11 +205,11 @@ GitHub Actions uses the committed lockfile and runs `npm ci`, tests, and build o
 chatgpt.com
    ↓
 content scripts
-├─ upstream-derived DOM / conversation substrate
+├─ research-runtime (DOM-only conversation bootstrap)
 ├─ research-producer (RBREQ v7)
 └─ research-selection
    ↓
-Chrome local storage / background compatibility cache
+Chrome local storage / DOM-derived compatibility cache
    ↓
 Research Blackboard side panel
 ├─ semantic graph reducer
@@ -181,6 +238,6 @@ Because this is a derivative work, this fork does not unilaterally choose a lice
 
 ## Contributing
 
-Pull requests are welcome. For changes to semantic graph behavior, add or update a regression test whenever practical.
+Pull requests are welcome. For changes to semantic graph behavior, source navigation, layout, or Highlight provenance, add or update a regression test whenever practical.
 
 The core product constraint is simple: **reduce cognitive load; do not turn graph maintenance into another manual knowledge-management job.**

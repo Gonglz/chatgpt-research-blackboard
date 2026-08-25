@@ -41,6 +41,7 @@ Research Blackboard
 - **Research-first 布局**：ELK Layered + `deepens` Backbone + 防重叠 + soft drag preference + 曲线 routing。
 - **Anchor-aware Context**：明确回到旧主题时，语义匹配优先于时序上的“最近讨论”。
 - **Highlight**：选中 ChatGPT 回答中的文字，保存到最相关 Node；支持 Note、排序、移动、删除、Promote/Demote 和精确回源。
+- **Source Jump**：双击 Node 可回到原始消息并短暂描边；Highlight 可回到原句并临时高亮。
 - **Compact Detail Surface**：Checkpoint、关键词、Highlights、Relations、Source 放在 overlay 中，不让 Node 无限长高。
 - **Research Project**：实验性的跨 Chat canonical graph + conversation provenance。
 - **导出**：`.rbb.json`、Markdown、JSON Canvas、完整 PNG。
@@ -71,14 +72,14 @@ Canonical 语义方向：
 ### 推荐：从 GitHub Release 安装
 
 1. 打开 [Releases](https://github.com/Gonglz/chatgpt-research-blackboard/releases)。
-2. 下载最新版本中的 `chatgpt-research-blackboard-v0.1.0.zip`。
+2. 下载最新版本中的 `chatgpt-research-blackboard-v0.1.1.zip`。
 3. 解压 ZIP。
 4. 打开 `chrome://extensions/`。
 5. 开启右上角 **Developer mode / 开发者模式**。
 6. 点击 **Load unpacked / 加载已解压的扩展程序**。
 7. 选择刚刚解压、且根目录内包含 `manifest.json` 的文件夹。
 
-> 当前 `v0.1.0` 是 GitHub **Pre-release**，适合开发者和 early adopters 手动安装。
+> `v0.1.1` 是当前推荐的 GitHub **Pre-release**。不要继续使用旧的 `v0.1.0` 包；v0.1.1 已移除上游遗留的 ChatGPT token capture / private API compatibility path。
 
 ### 从源码安装
 
@@ -104,14 +105,21 @@ npm run build
 
 产品原则：**AI 默认维护结构，用户主要负责纠错和轻量整理。**
 
-## Highlight
+## Highlight 与 Source Jump
 
 Sidepanel 打开时，选中 ChatGPT Assistant 回答里的文字：
 
 - `★ Save`：保存到语义上最匹配的已有 Node；
 - `+ Node`：直接从选区创建新的研究 Node。
 
-Highlight 支持 Note、排序、Move、Delete、Promote to Node、Demote back to Highlight，以及在 DOM anchor 可恢复时精确跳回原句。
+Highlight 支持 Note、排序、Move、Delete、Promote to Node、Demote back to Highlight。
+
+来源定位：
+
+- 双击 Research Node：回到对应的当前 ChatGPT 原始消息，并短暂显示定位描边；
+- Highlight 的 `↗ Source`：尽量定位到精确 quote，并临时黄色高亮约 5 秒。
+
+当前 Source Jump 只保证**当前已渲染 DOM** 内的定位。跨 Chat Source Jump 仍属于实验性能力，当前版本不作为稳定承诺。
 
 ## 跨 Chat Project
 
@@ -126,7 +134,7 @@ Project
       └─ sources: Chat 2
 ```
 
-Node 属于 Project；provenance 属于具体 Chat。该功能已经实现，但仍需要更多真实使用验证。
+Node 属于 Project；provenance 属于具体 Chat。Project 数据模型已经实现，但跨 Chat Source Jump 仍需要更多真实使用验证。
 
 ## 自动建图怎么工作
 
@@ -143,25 +151,35 @@ Sidepanel 打开时，content script 会给当前用户消息附加一个紧凑�
 
 请阅读 [PRIVACY.md](./PRIVACY.md) 和 [中文隐私说明](./PRIVACY_ZH.md)。
 
-当前 `v0.1.0` Pre-release 的关键事实：
+当前 `v0.1.1` 的关键事实：
 
 - Research Graph、Highlights、Project metadata 等主要保存在 `chrome.storage.local`；
-- inherited compatibility layer 可能把部分 conversation data 缓存在浏览器本地 IndexedDB；
+- DOM-derived conversation snapshot 可能缓存在浏览器本地 IndexedDB；
 - 本项目**没有自建 Research Blackboard 云端后端**；
 - Research Mode 开启时，隐藏 RBREQ 会作为正常 ChatGPT 对话请求的一部分发送给 ChatGPT / OpenAI；
-- fork 中仍保留上游 auth compatibility layer：它可以观察 ChatGPT 请求、捕获 ChatGPT access token，并把 token 存在扩展本地存储中，用于显式 Refresh / fallback；
-- 当前代码没有设计把捕获到的 ChatGPT 凭据或 Research Graph 上传到本项目自建服务器。
+- **不会捕获或保存 ChatGPT Bearer access token**；
+- **不会为了 API 访问读取 ChatGPT authentication cookie**；
+- **不会调用 ChatGPT 私有 `/backend-api/` conversation endpoint**；
+- 当前 manifest 不再请求 `webRequest` 或 broad `tabs`；
+- 保留 `scripting`，仅用于用户主动触发的 Source Jump / exact Highlight DOM 定位与临时高亮。
+
+`v0.1.1` 启动时还会主动清理旧 `v0.1.0` 可能遗留在 `chrome.storage.local` 中的 token keys。
+
+### DOM-only 的取舍
+
+Refresh 和 conversation compatibility snapshot 现在只从当前 ChatGPT DOM 重建。因此：
+
+- 当前可见、已渲染的对话可以正常处理；
+- 不再通过私有 API 读取 hidden alternative branch；
+- 超长 Chat 如果被 ChatGPT virtualization / lazy rendering，未渲染的历史消息可能不进入本次 snapshot。
+
+这是为了缩小账号与凭据风险面而接受的 trade-off。
 
 ### Chrome Web Store 状态
 
-**当前 Pre-release 还不建议直接提交 Chrome Web Store。**
+v0.1.1 已解决 v0.1.0 审计中最主要的隐私 blocker：token interception、`webRequest` 和 private conversation API 路径都已删除。
 
-主要 blocker 是上游遗留的自动 access-token capture：它在没有独立 opt-in 流程的情况下工作，并依赖 `webRequest`。正式提交商店前应当：
-
-1. 优先彻底移除 token capture / `webRequest` compatibility；或至少改成显式、知情同意后才启用；
-2. 重新审计 `tabs`、`scripting`、`webRequest` 等权限，确保满足 minimum-permission 原则；
-3. 在 Store listing / Privacy practices 中准确披露 ChatGPT 页面内容、消息、Highlight、conversation identifier 等数据处理；
-4. 保持“不出售、不用于广告、不允许项目方人工读取用户研究内容”的 Limited Use 约束。
+仍不直接宣称 Chrome Web Store ready；正式提交前还需要单独完成 Store listing / Privacy practices / permission justification 审核。
 
 ## 导出与数据所有权
 
@@ -180,7 +198,7 @@ npm test
 npm run build
 ```
 
-回归测试重点覆盖：
+回归测试覆盖：
 
 - RGΔ parser / reducer；
 - Synthesis / Judgment parsing；
@@ -188,11 +206,13 @@ npm run build
 - Backbone parent / depth；
 - cycle handling；
 - vertical rank；
-- 同层 Node 防重叠。
+- 同层 Node 防重叠；
+- privacy boundary：禁止 `webRequest` / token capture / `/backend-api/`；
+- Source Jump / exact Highlight 的 `scripting` 依赖，防止以后再次被误删。
 
 GitHub Actions 使用已经提交的 `package-lock.json`，执行 `npm ci → npm test → npm run build`。
 
-当前 release candidate 的 `npm audit --omit=dev` 为 **0 production vulnerabilities**；剩余 audit 项是 esbuild 开发工具链 advisory，因此 `v0.1.0` 没有强制做 breaking upgrade。
+当前 release candidate 的 `npm audit --omit=dev` 为 **0 production vulnerabilities**；剩余 audit 项是 esbuild 开发工具链 advisory，因此没有强制做 breaking upgrade。
 
 ## 架构
 
@@ -200,11 +220,11 @@ GitHub Actions 使用已经提交的 `package-lock.json`，执行 `npm ci → np
 chatgpt.com
    ↓
 content scripts
-├─ upstream-derived DOM / conversation substrate
+├─ research-runtime (DOM-only conversation bootstrap)
 ├─ research-producer (RBREQ v7)
 └─ research-selection
    ↓
-Chrome local storage / background compatibility cache
+Chrome local storage / DOM-derived compatibility cache
    ↓
 Research Blackboard side panel
 ├─ semantic graph reducer
@@ -235,6 +255,6 @@ Research Blackboard side panel
 
 ## Contributing
 
-欢迎 PR。修改语义建图、Backbone、layout、Highlight provenance 等核心行为时，尽量同时补回归测试。
+欢迎 PR。修改语义建图、Backbone、layout、Highlight provenance、Source Jump 等核心行为时，尽量同时补回归测试。
 
 最重要的产品约束是：**降低认知负荷，而不是把图谱维护本身变成新的负担。**
