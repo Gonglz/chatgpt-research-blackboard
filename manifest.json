@@ -19,8 +19,7 @@
   },
   "permissions": [
     "storage",
-    "sidePanel",
-    "scripting"
+    "sidePanel"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
