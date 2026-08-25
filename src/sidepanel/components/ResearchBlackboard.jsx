@@ -214,7 +214,6 @@ function normalizeStoredNode(node, source) {
     type: 'researchNode',
     data: {
       type,
-      title,
       checkpoint: '',
       ...existingData,
       title,
