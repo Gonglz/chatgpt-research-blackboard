@@ -6,7 +6,13 @@
 import { setupMessageListener } from './messaging/message-handler.js';
 import { db } from './database/db.js';
 import { cache } from './cache/cache-manager.js';
-import { initTokenCapture, getTokenStatus } from './auth/token-capture.js';
+
+const LEGACY_AUTH_KEYS = [
+  'accessToken',
+  'tokenTimestamp',
+  'tokenSource',
+  'tokenInfo'
+];
 
 let listenersRegistered = false;
 let sidePanelConfigured = false;
@@ -27,6 +33,15 @@ function registerRuntimeListeners() {
   }
 }
 
+async function clearLegacyAuthState() {
+  try {
+    await chrome.storage.local.remove(LEGACY_AUTH_KEYS);
+    console.log('[Background] Legacy ChatGPT auth state cleared');
+  } catch (error) {
+    console.warn('[Background] Failed to clear legacy auth state:', error);
+  }
+}
+
 async function initializeServices() {
   if (servicesInitialized) {
     return;
@@ -43,21 +58,10 @@ async function initializeServices() {
       await db.open();
       console.log('[Background] Database opened');
 
-      const tokenCaptureReady = initTokenCapture();
-      if (tokenCaptureReady) {
-        console.log('[Background] Token auto-capture enabled');
-
-        const tokenStatus = await getTokenStatus();
-        if (tokenStatus.hasToken && !tokenStatus.isExpired) {
-          console.log('[Background] Valid token found (source:', tokenStatus.source, ')');
-        } else if (tokenStatus.hasToken && tokenStatus.isExpired) {
-          console.log('[Background] Token expired, waiting for auto-capture');
-        } else {
-          console.log('[Background] No token found, waiting for auto-capture');
-        }
-      } else {
-        console.warn('[Background] Token auto-capture not available');
-      }
+      // v0.1.0 and earlier could persist a ChatGPT access token locally.
+      // Token interception/authenticated internal API access has been removed;
+      // clear any leftover credential material when this version starts.
+      await clearLegacyAuthState();
 
       servicesInitialized = true;
       console.log('[Background] Service Worker initialized successfully');
