@@ -58,6 +58,8 @@ ChatGPT 返回的 `RGΔ` 会由扩展在页面上隐藏并在本地消费，但�
 
 这些数据不会被发送到本项目自建服务器。
 
+用户主动执行 source navigation 时，扩展会在已授权的 ChatGPT host 上使用 Chrome `scripting` API：定位对应的已渲染消息或精确 quote、滚动到原始位置，并进行临时高亮。该 scripting 路径不用于捕获凭据，也不调用 ChatGPT 私有 API。
+
 ## DOM-only Conversation Compatibility
 
 当前源码的 conversation snapshot 与手动 Refresh 使用 DOM-only 路径：
@@ -71,23 +73,24 @@ ChatGPT 返回的 `RGΔ` 会由扩展在页面上隐藏并在本地消费，但�
 
 ## 浏览器权限
 
-当前 manifest 只请求：
+当前 manifest 请求：
 
 - `storage` — Research Blackboard 本地状态与 DOM-derived compatibility cache 状态；
-- `sidePanel` — Research Blackboard Sidepanel。
+- `sidePanel` — Research Blackboard Sidepanel；
+- `scripting` — 在已授权 ChatGPT 页面上执行用户主动触发的 source location / exact Highlight jump。
 
 Host access 限制为：
 
 - `https://chatgpt.com/*`
 - `https://chat.openai.com/*`
 
-当前源码**不再请求** `webRequest`、`tabs` 或 `scripting`。
+当前源码**不再请求** `webRequest` 或广泛的 `tabs` 权限。保留 `scripting` 是因为当前 source-jump 实现使用 `chrome.scripting.executeScript()` 完成精确 DOM 定位与高亮；它不用于 request-header interception，也不用于动态恢复 content script。
 
 由于读取 ChatGPT 页面是扩展核心功能所必需，content script 可以在上述两个 ChatGPT host 上读取和修改页面；扩展没有获得对其他无关网站的 host access。
 
 ## 扩展 Reload / Update 后的行为
 
-扩展不再为了恢复连接而动态注入 content script。若扩展 Reload / Update 时某个已经打开的 ChatGPT 页面仍保留旧的、已失效的 extension context，请刷新该 ChatGPT 页面，让 manifest 声明的 content scripts 重新加载。
+扩展不再为了恢复连接而动态注入 `dist/content.js`。若扩展 Reload / Update 时某个已经打开的 ChatGPT 页面仍保留旧的、已失效的 extension context，请刷新该 ChatGPT 页面，让 manifest 声明的 content scripts 重新加载。
 
 ## 第三方共享与商业使用
 
@@ -104,7 +107,7 @@ Research Blackboard 对用户数据的使用应限定在已披露的单一目的
 
 ChatGPT Research Blackboard 对用户数据的使用将遵守 Chrome Web Store User Data Policy，包括 Limited Use 要求。用户数据不会被出售，不会用于个性化广告，也不会被用于与扩展已披露单一目的无关的用途。
 
-移除 credential interception 以及 `webRequest` / `tabs` / `scripting` 广泛权限，已经解决 `v0.1.0` 审计中发现的主要隐私 blocker。但在正式声明 Chrome Web Store ready 之前，仍应单独完成一次 Store submission review。
+移除 credential interception 以及 `webRequest` / 广泛 `tabs` 权限，已经解决 `v0.1.0` 审计中发现的主要隐私 blocker。保留的 `scripting` 权限受 ChatGPT host permissions 限制，仅用于显式 source navigation / Highlight 高亮。在正式声明 Chrome Web Store ready 之前，仍应单独完成一次 Store submission review。
 
 ## 导出
 
