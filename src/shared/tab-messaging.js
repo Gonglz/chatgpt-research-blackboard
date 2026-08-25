@@ -19,31 +19,35 @@ export function isMissingReceiverError(error) {
   return error?.message?.includes('Receiving end does not exist');
 }
 
-export async function ensureContentScript(tabId, delayMs = 300) {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ['dist/content.js']
-  });
-
-  if (delayMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-}
-
+/**
+ * Send a message to an existing manifest-declared content script.
+ *
+ * Research Blackboard intentionally does not dynamically inject content scripts:
+ * doing so would require the broader `scripting` permission. If an extension
+ * reload invalidated the page's old content-script context, the user must refresh
+ * the ChatGPT tab. A short retry is kept for the normal document_idle startup race.
+ */
 export async function sendMessageToTabWithFallback(tabId, message, options = {}) {
-  const {
-    injectOnMissingReceiver = true,
-    retryDelayMs = 300
-  } = options;
+  const { retryDelayMs = 300 } = options;
 
   try {
     return await sendMessageOnce(tabId, message);
   } catch (error) {
-    if (!injectOnMissingReceiver || !isMissingReceiverError(error)) {
+    if (!isMissingReceiverError(error)) {
       throw error;
     }
 
-    await ensureContentScript(tabId, retryDelayMs);
-    return await sendMessageOnce(tabId, message);
+    if (retryDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+
+    try {
+      return await sendMessageOnce(tabId, message);
+    } catch (retryError) {
+      if (isMissingReceiverError(retryError)) {
+        throw new Error('Research Blackboard content script is not active. Refresh the ChatGPT page after reloading or updating the extension.');
+      }
+      throw retryError;
+    }
   }
 }
