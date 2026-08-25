@@ -53,6 +53,8 @@ When the user selects text in a ChatGPT assistant response and chooses `★ Save
 
 Saved Highlights are not sent to a separate project-operated server.
 
+User-initiated source navigation uses the Chrome `scripting` API on the permitted ChatGPT hosts to locate the corresponding rendered message or exact quoted text, scroll it into view, and temporarily highlight it. This scripting path is not used to capture credentials or call ChatGPT private APIs.
+
 ## DOM-only conversation compatibility
 
 The current source uses a DOM-only compatibility path for conversation snapshots and manual Refresh:
@@ -66,23 +68,24 @@ This reduces credential and account-risk surface, but it means a snapshot can on
 
 ## Browser permissions
 
-The current manifest requests only:
+The current manifest requests:
 
 - `storage` — local Research Blackboard state and DOM-derived compatibility cache state;
-- `sidePanel` — the Research Blackboard side panel.
+- `sidePanel` — the Research Blackboard side panel;
+- `scripting` — explicit source-location and exact Highlight navigation on the permitted ChatGPT pages.
 
 Host access is limited to:
 
 - `https://chatgpt.com/*`
 - `https://chat.openai.com/*`
 
-The current source does **not** request `webRequest`, `tabs`, or `scripting`.
+The current source does **not** request `webRequest` or broad `tabs` permission. `scripting` is retained because the current source-jump implementation uses `chrome.scripting.executeScript()` for user-initiated DOM location/highlighting. It is not used for request-header interception or dynamic content-script recovery.
 
 Because host access is required for the extension's core purpose, the content scripts can read and modify ChatGPT pages on those hosts. They are not granted host access to unrelated websites.
 
 ## Extension reload behavior
 
-The extension no longer dynamically injects content scripts after an extension reload or update. If an already-open ChatGPT page has an invalidated extension context, refresh that ChatGPT tab to restore the manifest-declared content scripts.
+The extension does not dynamically inject `dist/content.js` after an extension reload or update. If an already-open ChatGPT page has an invalidated extension context, refresh that ChatGPT tab to restore the manifest-declared content scripts.
 
 ## Third-party sharing and commercial use
 
@@ -99,7 +102,7 @@ Use of user data should remain limited to the extension's disclosed single purpo
 
 ChatGPT Research Blackboard's use of user data will comply with the Chrome Web Store User Data Policy, including the Limited Use requirements. User data will not be sold, used for personalized advertising, or used for purposes unrelated to the extension's disclosed single purpose.
 
-The removal of credential interception and broad `webRequest` / `tabs` / `scripting` permissions addresses the primary privacy blocker identified in `v0.1.0`. A separate Chrome Web Store submission review is still required before claiming store readiness.
+The removal of credential interception plus `webRequest` and broad `tabs` permissions addresses the primary privacy blocker identified in `v0.1.0`. The retained `scripting` permission is scoped by ChatGPT host permissions and supports explicit source navigation/highlighting. A separate Chrome Web Store submission review is still required before claiming store readiness.
 
 ## Exports
 
