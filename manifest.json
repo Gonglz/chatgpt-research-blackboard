@@ -21,8 +21,7 @@
     "storage",
     "sidePanel",
     "tabs",
-    "scripting",
-    "webRequest"
+    "scripting"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
