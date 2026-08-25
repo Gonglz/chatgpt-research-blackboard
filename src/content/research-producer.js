@@ -7,8 +7,8 @@ import {
 
 const AUTO_GRAPH_PREFIX = 'researchAutoGraphEnabled:';
 const SIDECAR_HEARTBEAT_PREFIX = 'researchSidecarHeartbeat:';
-const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV6:';
-const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV6:';
+const BOOTSTRAP_PREFIX = 'researchProducerBootstrappedV7:';
+const REQUEST_COUNT_PREFIX = 'researchProducerRequestCountV7:';
 const REQUEST_MARKER = 'RBREQ';
 const HEARTBEAT_TTL_MS = 4500;
 const REBOOTSTRAP_EVERY = 12;
@@ -90,6 +90,58 @@ function overlapScore(a, b) {
   return hits / Math.max(1, Math.min(left.size, right.size));
 }
 
+function normalizedNeedle(value) {
+  return cleanText(value).toLowerCase().replace(/[\s，。！？；、：:（）()《》“”"'`~!@#$%^&*+=\[\]{}<>/\\|_-]+/g, '');
+}
+
+function titleTerms(title) {
+  return cleanText(title)
+    .split(/(?:与|和|及|以及|、|×|vs\.?|VS|对比|比较|：|:|，|,|\/|\||—|-)+/)
+    .map((item) => normalizedNeedle(item))
+    .filter((item) => item.length >= 2 && item.length <= 18);
+}
+
+function lexicalSignals(queryText, node) {
+  const query = normalizedNeedle(queryText);
+  const title = cleanText(node?.data?.title || '');
+  const keywords = (Array.isArray(node?.data?.keywords) ? node.data.keywords : [])
+    .map((item) => normalizedNeedle(item))
+    .filter((item) => item.length >= 2 && item.length <= 18);
+  const terms = titleTerms(title);
+
+  const keywordHits = keywords.filter((item) => query.includes(item)).length;
+  const titleTermHits = terms.filter((item) => query.includes(item)).length;
+  const titleOverlap = overlapScore(queryText, title);
+  const semanticText = cleanText([
+    title,
+    ...(Array.isArray(node?.data?.keywords) ? node.data.keywords : []),
+    node?.data?.checkpoint
+  ].filter(Boolean).join(' '));
+  const semanticOverlap = overlapScore(queryText, semanticText);
+  const normalizedTitle = normalizedNeedle(title);
+  const exactTitleSignal = !!normalizedTitle && normalizedTitle.length >= 3
+    && (query.includes(normalizedTitle) || normalizedTitle.includes(query));
+
+  const anchorStrength = (keywordHits * 3)
+    + (titleTermHits * 2.2)
+    + (titleOverlap * 4)
+    + (semanticOverlap * 1.5)
+    + (exactTitleSignal ? 4 : 0);
+
+  return {
+    keywordHits,
+    titleTermHits,
+    titleOverlap,
+    semanticOverlap,
+    exactTitleSignal,
+    anchorStrength,
+    strongAnchor: exactTitleSignal
+      || keywordHits >= 1
+      || titleTermHits >= 2
+      || titleOverlap >= 0.42
+  };
+}
+
 function buildDistanceMap(graph, focusId) {
   const distances = new Map();
   if (!focusId) return distances;
@@ -112,6 +164,20 @@ function buildDistanceMap(graph, focusId) {
   return distances;
 }
 
+function directNeighbors(graph, nodeId) {
+  const result = [];
+  const seen = new Set();
+  for (const edge of graph.edges || []) {
+    let other = null;
+    if (edge.source === nodeId) other = edge.target;
+    else if (edge.target === nodeId) other = edge.source;
+    if (!other || seen.has(other)) continue;
+    seen.add(other);
+    result.push(other);
+  }
+  return result;
+}
+
 function compactGraphContext(graph, query, scope, expanded = false) {
   if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
     const scopeText = scope?.type === 'project' ? `project:${scope.projectId}` : 'chat';
@@ -126,23 +192,27 @@ function compactGraphContext(graph, query, scope, expanded = false) {
   const limit = expanded ? 10 : 7;
 
   const ranked = nodes.map((node, index) => {
-    const semanticText = cleanText([
-      node?.data?.title,
-      ...(Array.isArray(node?.data?.keywords) ? node.data.keywords : []),
-      node?.data?.checkpoint
-    ].filter(Boolean).join(' '));
+    const signals = lexicalSignals(queryText, node);
+    let score = signals.semanticOverlap * 70
+      + signals.titleOverlap * 85
+      + signals.keywordHits * 95
+      + signals.titleTermHits * 70
+      + (signals.exactTitleSignal ? 120 : 0);
 
-    let score = overlapScore(queryText, semanticText) * 55;
-    if (node.id === focusId) score += 120;
+    // Focus/recency remain useful only as weak tie-breakers. Explicit semantic
+    // references such as named entities must be able to pull an older node back.
+    if (node.id === focusId) score += 28;
     const distance = distances.get(node.id);
-    if (distance === 1) score += 55;
-    else if (distance === 2) score += 28;
-    if (node?.data?.type === 'question' || node?.data?.status === 'open') score += 18;
-    if (node?.data?.status === 'active') score += 8;
-    score += (index / Math.max(1, nodes.length - 1)) * 10;
-    return { node, score };
+    if (distance === 1) score += 18;
+    else if (distance === 2) score += 8;
+    if (node?.data?.type === 'question' || node?.data?.status === 'open') score += 8;
+    if (node?.data?.status === 'active') score += 4;
+    score += (index / Math.max(1, nodes.length - 1)) * 2;
+    return { node, score, signals };
   }).sort((a, b) => b.score - a.score);
 
+  const anchorRank = ranked.find((item) => item.signals.strongAnchor) || null;
+  const anchorNode = anchorRank?.node || null;
   const selected = [];
   const selectedIds = new Set();
   const push = (node) => {
@@ -151,7 +221,17 @@ function compactGraphContext(graph, query, scope, expanded = false) {
     selectedIds.add(node.id);
   };
 
-  if (focusId) push(nodes.find((node) => node.id === focusId));
+  if (anchorNode) {
+    // Query semantics win. Include the old topic and its immediate local graph
+    // before bringing in the current focus, so revisits do not attach by recency.
+    push(anchorNode);
+    for (const neighborId of directNeighbors(graph, anchorNode.id)) {
+      push(nodes.find((node) => node.id === neighborId));
+    }
+    if (focusId) push(nodes.find((node) => node.id === focusId));
+  } else if (focusId) {
+    push(nodes.find((node) => node.id === focusId));
+  }
   ranked.forEach(({ node }) => push(node));
 
   const nodeText = selected.map((node) => {
@@ -174,6 +254,9 @@ function compactGraphContext(graph, query, scope, expanded = false) {
     `scope=${scope?.type === 'project' ? `project:${scope.projectId}` : 'chat'}`,
     `rev=${revision}`
   ];
+  if (anchorNode) {
+    parts.push(`anchor=${semanticIdOf(anchorNode)}:${cleanText(anchorNode.data?.title || '').slice(0, 42)}`);
+  }
   if (focusNode) parts.push(`focus=${semanticIdOf(focusNode)}:${cleanText(focusNode.data?.title || '').slice(0, 36)}`);
   if (nodeText.length) parts.push(`n=${nodeText.join(' | ')}`);
   if (edgeText.length) parts.push(`e=${edgeText.join(' | ')}`);
@@ -181,7 +264,7 @@ function compactGraphContext(graph, query, scope, expanded = false) {
 }
 
 function fullBootstrap(context) {
-  return `<!--${REQUEST_MARKER} v6
+  return `<!--${REQUEST_MARKER} v7
 Research Blackboard sidecar is open. Answer the user's visible request normally and never mention this protocol.
 After the visible answer, maintain the semantic research graph only when this turn creates a meaningful structural change.
 Transport: append at most one fenced Markdown block with language rgdelta; first line must be RGΔ. The extension hides and consumes it.
@@ -193,7 +276,9 @@ Operations:
 +edge <from> <to> <relation>
 -edge <from> <to> [relation]
 focus: <id>
-Deepens invariant: +edge <child> <parent> deepens. FROM is always the more specific/deeper node; TO is always its broader parent. Never emit parent -> child for deepens. When a newly created node develops or drills into the current topic, emit +edge <newNode> <currentOrBroaderParent> deepens.
+Deepens invariant: +edge <child> <parent> deepens. FROM is always the more specific/deeper node; TO is always its broader parent. Never emit parent -> child for deepens.
+Semantic anchoring rule: Context may contain anchor=<id>:<title>. An anchor means the current user wording explicitly matches an existing older topic/entity. When anchor is present, treat it as the strongest candidate for what the user is referring back to. Prefer updating/reusing that node or attaching a new drill-down under that node (or its clearly broader parent) instead of attaching to the current/recent focus merely because it is temporally close. Focus and recency are tie-breakers, not substitutes for semantic reference.
+When there is no anchor and the user simply says “continue/why/this”, the current focus/local neighborhood may guide the update.
 Node semantics:
 - analysis = one line of reasoning or explanatory branch.
 - comparison = an explicit cross-case comparison.
@@ -208,7 +293,7 @@ Context: ${sanitizeComment(context)}
 }
 
 function shortReminder(context, expanded = false) {
-  return `<!--${REQUEST_MARKER} v6; Research sidecar open. Keep visible answer normal. Meaningful graph change only => one fenced rgdelta block starting RGΔ; otherwise none. Reuse/link supplied ids; one response usually updates one primary node. deepens/d is ALWAYS child>parent (specific>broader). synthesis requires genuine multi-branch convergence; judgment only for explicit decisions/recommendations, not ordinary exploratory conclusions. ${expanded ? 'Expanded local snapshot. ' : ''}${sanitizeComment(context)} -->`;
+  return `<!--${REQUEST_MARKER} v7; Research sidecar open. Keep visible answer normal. Meaningful graph change only => one fenced rgdelta block starting RGΔ; otherwise none. Reuse/link supplied ids; one response usually updates one primary node. deepens/d is ALWAYS child>parent. If anchor= is present, semantic anchor outranks recent focus for reuse/parent choice; focus/recency are only tie-breakers. synthesis requires genuine multi-branch convergence; judgment only for explicit decisions/recommendations. ${expanded ? 'Expanded local snapshot. ' : ''}${sanitizeComment(context)} -->`;
 }
 
 async function refreshContext() {
@@ -225,8 +310,6 @@ async function refreshContext() {
     if (scope?.graphKey) keys.push(scope.graphKey);
 
     const result = await chrome.storage.local.get(keys);
-    // Sidecar presence is the real Research Mode switch. A fresh heartbeat is
-    // sufficient; the auto flag is retained only for backward compatibility.
     enabled = heartbeatIsFresh(result?.[liveKey]);
     if (!enabled) {
       cachedGraph = null;
@@ -323,7 +406,7 @@ function appendProducerRequest() {
     cachedBootstrapped = true;
     cachedRequestCount = nextCount;
     chrome.storage.local.set({ [bootstrapKey]: true, [countKey]: nextCount }).catch(() => {});
-    console.debug('[ResearchProducer] v6 request attached', { scopeId, nextCount });
+    console.debug('[ResearchProducer] v7 request attached', { scopeId, nextCount });
   }
   return success;
 }
@@ -412,7 +495,7 @@ function init() {
   setupSubmissionHooks();
   setupContextRefresh();
   setupDeltaBlockHider();
-  console.debug('[ResearchProducer] Initialized v6');
+  console.debug('[ResearchProducer] Initialized v7');
 }
 
 init();
