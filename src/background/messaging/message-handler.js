@@ -113,7 +113,7 @@ async function handleIncrementalUpdate(updateData) {
       newNode: updateData.newNode,
       stats: {
         nodes: updateData.updatedNodes?.length || 0,
-        edges: updateData.updatedEdges || 0,
+        edges: updateData.updatedEdges?.length || 0,
         rounds: updateData.updatedRounds?.length || 0,
         branches: updateData.updatedBranches?.length || 0
       }
