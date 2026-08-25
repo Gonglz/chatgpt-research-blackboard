@@ -22,10 +22,11 @@ export function isMissingReceiverError(error) {
 /**
  * Send a message to an existing manifest-declared content script.
  *
- * Research Blackboard intentionally does not dynamically inject content scripts:
- * doing so would require the broader `scripting` permission. If an extension
- * reload invalidated the page's old content-script context, the user must refresh
- * the ChatGPT tab. A short retry is kept for the normal document_idle startup race.
+ * Research Blackboard intentionally does not dynamically inject dist/content.js
+ * as a recovery fallback. The `scripting` permission is reserved for explicit,
+ * user-initiated source-location/highlight actions. If an extension reload
+ * invalidated the page's old content-script context, the ChatGPT tab must be
+ * refreshed. A short retry remains for the normal document_idle startup race.
  */
 export async function sendMessageToTabWithFallback(tabId, message, options = {}) {
   const { retryDelayMs = 300 } = options;
