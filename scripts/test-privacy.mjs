@@ -11,6 +11,11 @@ assert.equal(
   false,
   'manifest must not request webRequest after token capture removal'
 );
+assert.equal(
+  permissions.has('tabs'),
+  false,
+  'manifest must not request broad tabs permission; ChatGPT host permissions are sufficient'
+);
 
 const tokenCapture = read('src/background/auth/token-capture.js');
 assert.equal(
