@@ -1,0 +1,414 @@
+import ELK from 'elkjs/lib/elk.bundled.js';
+
+const elk = new ELK();
+
+export const RESEARCH_NODE_WIDTH = 200;
+export const RESEARCH_NODE_HEIGHT = 88;
+export const RESEARCH_LAYOUT_ALGORITHM = 'elk-layered-down-v4';
+const HORIZONTAL_NODE_GAP = 48;
+
+export function cleanResearchRelation(edge) {
+  return String(edge?.data?.relation || edge?.label || 'informs').trim().toLowerCase();
+}
+
+function stableNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function positionOf(node) {
+  return {
+    x: stableNumber(node?.position?.x),
+    y: stableNumber(node?.position?.y)
+  };
+}
+
+function distance(a, b) {
+  const dx = stableNumber(a?.x) - stableNumber(b?.x);
+  const dy = stableNumber(a?.y) - stableNumber(b?.y);
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function blend(a, b, keepA) {
+  return stableNumber(a) * keepA + stableNumber(b) * (1 - keepA);
+}
+
+/**
+ * Only semantic structure that changes vertical hierarchy belongs in the layout
+ * signature. Focus, selection, Highlight edits, cross-links and text edits do
+ * not trigger automatic layout.
+ */
+export function researchStructuralSignature(nodes = [], edges = []) {
+  const nodeIds = nodes.map((node) => String(node.id)).sort();
+  const deepens = edges
+    .filter((edge) => cleanResearchRelation(edge) === 'deepens')
+    .map((edge) => `${edge.source}>${edge.target}`)
+    .sort();
+  return `n:${nodeIds.join(',')}|d:${deepens.join(',')}`;
+}
+
+function createsCycle(nodeId, parentId, parentByNodeId) {
+  let cursor = parentId;
+  const seen = new Set();
+  while (cursor) {
+    if (cursor === nodeId) return true;
+    if (seen.has(cursor)) return true;
+    seen.add(cursor);
+    cursor = parentByNodeId[cursor] || null;
+  }
+  return false;
+}
+
+/**
+ * Project the canonical graph into a low-volatility backbone.
+ *
+ * IMPORTANT semantic convention used by RGΔ:
+ *   child --deepens--> parent
+ *
+ * The canonical edge direction is intentionally preserved in storage. The
+ * layout projection reverses that relation to parent -> child so visual depth
+ * reads from top (broader) to bottom (more specific).
+ *
+ * - deepens is the only structural relation.
+ * - every node gets at most one primary parent for layout.
+ * - a previously valid primary parent is retained when possible.
+ * - secondary deepens edges remain canonical edges, but do not control rank.
+ */
+export function deriveSemanticBackbone(nodes = [], edges = [], previousParentByNodeId = {}) {
+  const nodeIds = new Set(nodes.map((node) => String(node.id)));
+  const parentsByChild = new Map();
+
+  const deepensEdges = edges
+    .filter((edge) => cleanResearchRelation(edge) === 'deepens')
+    .filter((edge) => nodeIds.has(String(edge.source)) && nodeIds.has(String(edge.target)) && edge.source !== edge.target)
+    .slice()
+    .sort((a, b) => String(a.id || `${a.source}>${a.target}`).localeCompare(String(b.id || `${b.source}>${b.target}`)));
+
+  for (const edge of deepensEdges) {
+    const childId = String(edge.source);
+    const list = parentsByChild.get(childId) || [];
+    list.push(edge);
+    parentsByChild.set(childId, list);
+  }
+
+  const parentByNodeId = {};
+  const backboneEdgeIds = new Set();
+  const orderedNodes = nodes.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+  for (const node of orderedNodes) {
+    const nodeId = String(node.id);
+    const candidates = parentsByChild.get(nodeId) || [];
+    if (!candidates.length) continue;
+
+    const previousParent = previousParentByNodeId?.[nodeId] || null;
+    const preferred = previousParent
+      ? candidates.find((edge) => String(edge.target) === String(previousParent))
+      : null;
+    const orderedCandidates = preferred
+      ? [preferred, ...candidates.filter((edge) => edge !== preferred)]
+      : candidates;
+
+    for (const edge of orderedCandidates) {
+      const parentId = String(edge.target);
+      if (createsCycle(nodeId, parentId, parentByNodeId)) continue;
+      parentByNodeId[nodeId] = parentId;
+      backboneEdgeIds.add(String(edge.id || `${edge.source}>${edge.target}`));
+      break;
+    }
+  }
+
+  const childrenByNodeId = {};
+  for (const node of nodes) childrenByNodeId[String(node.id)] = [];
+  for (const [childId, parentId] of Object.entries(parentByNodeId)) {
+    if (!childrenByNodeId[parentId]) childrenByNodeId[parentId] = [];
+    childrenByNodeId[parentId].push(childId);
+  }
+  for (const children of Object.values(childrenByNodeId)) children.sort();
+
+  const rootIds = nodes
+    .map((node) => String(node.id))
+    .filter((nodeId) => !parentByNodeId[nodeId])
+    .sort();
+
+  const depthByNodeId = {};
+  const queue = rootIds.map((id) => ({ id, depth: 0 }));
+  const visited = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || visited.has(current.id)) continue;
+    visited.add(current.id);
+    depthByNodeId[current.id] = current.depth;
+    for (const childId of childrenByNodeId[current.id] || []) {
+      queue.push({ id: childId, depth: current.depth + 1 });
+    }
+  }
+
+  return {
+    rootIds,
+    parentByNodeId,
+    childrenByNodeId,
+    depthByNodeId,
+    backboneEdgeIds
+  };
+}
+
+function translatedTargets(nodes, elkChildren, layoutState) {
+  const byId = new Map((elkChildren || []).map((child) => [String(child.id), {
+    x: stableNumber(child.x),
+    y: stableNumber(child.y)
+  }]));
+  const previousPositions = layoutState?.lastAppliedPositions || {};
+  const dx = [];
+  const dy = [];
+
+  for (const node of nodes) {
+    const id = String(node.id);
+    const target = byId.get(id);
+    const previous = previousPositions[id];
+    if (!target || !previous) continue;
+    const current = positionOf(node);
+    dx.push(current.x - target.x);
+    dy.push(current.y - target.y);
+  }
+
+  // Keep the whole drawing anchored near where the user already knows it. This
+  // translates the complete layout as one unit; it does not change rank depth.
+  const offsetX = dx.length ? average(dx) : 0;
+  const offsetY = dy.length ? average(dy) : 0;
+  const translated = new Map();
+  for (const [id, target] of byId.entries()) {
+    translated.set(id, { x: target.x + offsetX, y: target.y + offsetY });
+  }
+  return translated;
+}
+
+/**
+ * Soft horizontal preferences are allowed to bend ELK's X coordinates, but
+ * they are never allowed to re-introduce overlap. Resolve collisions after all
+ * preference blending, grouped by semantic backbone depth. The group is
+ * re-centered afterwards so the whole rank does not drift progressively right.
+ */
+function resolveRankCollisions(nodes = [], depthByNodeId = {}, gap = HORIZONTAL_NODE_GAP) {
+  const groups = new Map();
+  for (const node of nodes) {
+    const id = String(node.id);
+    const depth = Number.isFinite(depthByNodeId?.[id]) ? depthByNodeId[id] : 0;
+    const list = groups.get(depth) || [];
+    list.push(node);
+    groups.set(depth, list);
+  }
+
+  const resolvedById = new Map();
+  const minStep = RESEARCH_NODE_WIDTH + gap;
+
+  for (const group of groups.values()) {
+    const ordered = group.slice().sort((a, b) => {
+      const ax = stableNumber(a?.position?.x);
+      const bx = stableNumber(b?.position?.x);
+      return ax - bx || String(a.id).localeCompare(String(b.id));
+    });
+    if (!ordered.length) continue;
+
+    const desired = ordered.map((node) => stableNumber(node?.position?.x));
+    const placed = [desired[0]];
+    for (let i = 1; i < desired.length; i++) {
+      placed[i] = Math.max(desired[i], placed[i - 1] + minStep);
+    }
+
+    const desiredCenter = (desired[0] + desired[desired.length - 1] + RESEARCH_NODE_WIDTH) / 2;
+    const placedCenter = (placed[0] + placed[placed.length - 1] + RESEARCH_NODE_WIDTH) / 2;
+    const recenter = desiredCenter - placedCenter;
+
+    ordered.forEach((node, index) => {
+      resolvedById.set(String(node.id), {
+        x: placed[index] + recenter,
+        y: stableNumber(node?.position?.y)
+      });
+    });
+  }
+
+  return nodes.map((node) => {
+    const position = resolvedById.get(String(node.id)) || positionOf(node);
+    return { ...node, position };
+  });
+}
+
+/**
+ * Run ELK on the primary deepens backbone only. Canonical deepens edges are
+ * child -> parent, so layout edges are deliberately reversed to parent -> child.
+ * Cross-links are excluded from ranking; React Flow renders them contextually.
+ *
+ * v4 invariants:
+ * - vertical depth is structural and comes directly from ELK;
+ * - user/current positions may soften horizontal placement;
+ * - final same-rank positions are collision-free, regardless of preferences.
+ */
+export async function layoutResearchGraph(nodes = [], edges = [], previousLayoutState = {}) {
+  if (!nodes.length) {
+    return {
+      nodes,
+      layoutState: {
+        structuralSignature: researchStructuralSignature(nodes, edges),
+        backboneParentByNodeId: {},
+        preferredPositions: {},
+        lastAppliedPositions: {},
+        algorithm: RESEARCH_LAYOUT_ALGORITHM
+      }
+    };
+  }
+
+  const backbone = deriveSemanticBackbone(
+    nodes,
+    edges,
+    previousLayoutState?.backboneParentByNodeId || {}
+  );
+
+  const primaryEdges = [];
+  for (const [childId, parentId] of Object.entries(backbone.parentByNodeId)) {
+    primaryEdges.push({
+      id: `backbone:${parentId}>${childId}`,
+      sources: [parentId],
+      targets: [childId]
+    });
+  }
+
+  const graph = {
+    id: 'research-blackboard-layout',
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'DOWN',
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.spacing.nodeNode': '64',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '92',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '34',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+      'elk.layered.crossingMinimization.semiInteractive': 'true',
+      'elk.padding': '[top=28,left=28,bottom=28,right=28]'
+    },
+    children: nodes.map((node) => ({
+      id: String(node.id),
+      width: RESEARCH_NODE_WIDTH,
+      height: RESEARCH_NODE_HEIGHT
+    })),
+    edges: primaryEdges
+  };
+
+  const laidOut = await elk.layout(graph);
+  const targets = translatedTargets(nodes, laidOut.children || [], previousLayoutState);
+  const preferredPositions = { ...(previousLayoutState?.preferredPositions || {}) };
+  const previousApplied = previousLayoutState?.lastAppliedPositions || {};
+
+  const provisionalNodes = nodes.map((node) => {
+    const id = String(node.id);
+    const current = positionOf(node);
+    const target = targets.get(id) || current;
+    const preferred = preferredPositions[id] || null;
+    const existedBefore = !!previousApplied[id];
+
+    let next;
+    if (preferred) {
+      // Dragging means “prefer this horizontal neighborhood”. Vertical rank is
+      // semantic and therefore still comes directly from ELK.
+      next = {
+        x: blend(preferred.x, target.x, 0.72),
+        y: target.y
+      };
+    } else if (existedBefore) {
+      // Preserve some horizontal mental map while enforcing exact rank depth.
+      next = {
+        x: blend(current.x, target.x, 0.52),
+        y: target.y
+      };
+    } else {
+      next = target;
+    }
+
+    return { ...node, position: next };
+  });
+
+  const collisionFreeNodes = resolveRankCollisions(
+    provisionalNodes,
+    backbone.depthByNodeId,
+    HORIZONTAL_NODE_GAP
+  );
+
+  const lastAppliedPositions = {};
+  const nextNodes = collisionFreeNodes.map((node) => {
+    const id = String(node.id);
+    const rounded = {
+      x: Math.round(stableNumber(node.position?.x) * 10) / 10,
+      y: Math.round(stableNumber(node.position?.y) * 10) / 10
+    };
+    lastAppliedPositions[id] = rounded;
+    return { ...node, position: rounded };
+  });
+
+  const liveIds = new Set(nodes.map((node) => String(node.id)));
+  for (const id of Object.keys(preferredPositions)) {
+    if (!liveIds.has(id)) delete preferredPositions[id];
+  }
+
+  return {
+    nodes: nextNodes,
+    layoutState: {
+      structuralSignature: researchStructuralSignature(nodes, edges),
+      backboneParentByNodeId: backbone.parentByNodeId,
+      preferredPositions,
+      lastAppliedPositions,
+      lastBackboneDepthByNodeId: backbone.depthByNodeId,
+      algorithm: RESEARCH_LAYOUT_ALGORITHM
+    }
+  };
+}
+
+/**
+ * Detect position changes that happened without structural change. Those are
+ * interpreted as user drag preferences. A small epsilon filters React Flow
+ * rounding noise.
+ */
+export function capturePreferredPositions(nodes = [], layoutState = {}, epsilon = 6) {
+  const previous = layoutState?.lastAppliedPositions || {};
+  const preferredPositions = { ...(layoutState?.preferredPositions || {}) };
+  const lastAppliedPositions = { ...previous };
+  let changed = false;
+
+  for (const node of nodes) {
+    const id = String(node.id);
+    const before = previous[id];
+    if (!before) continue;
+    const current = positionOf(node);
+    if (distance(current, before) <= epsilon) continue;
+    preferredPositions[id] = current;
+    lastAppliedPositions[id] = current;
+    changed = true;
+  }
+
+  return {
+    changed,
+    layoutState: {
+      ...layoutState,
+      preferredPositions,
+      lastAppliedPositions
+    }
+  };
+}
+
+export function layoutStateForImportedGraph(nodes = [], edges = [], previous = {}) {
+  const backbone = deriveSemanticBackbone(nodes, edges, previous?.backboneParentByNodeId || {});
+  const positions = {};
+  for (const node of nodes) positions[String(node.id)] = positionOf(node);
+  return {
+    structuralSignature: researchStructuralSignature(nodes, edges),
+    backboneParentByNodeId: backbone.parentByNodeId,
+    preferredPositions: { ...(previous?.preferredPositions || {}) },
+    lastAppliedPositions: positions,
+    lastBackboneDepthByNodeId: backbone.depthByNodeId,
+    algorithm: RESEARCH_LAYOUT_ALGORITHM,
+    importedLayout: true
+  };
+}

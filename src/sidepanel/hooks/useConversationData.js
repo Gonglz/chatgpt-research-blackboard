@@ -5,9 +5,12 @@
  * 1) 始终展示「当前活动 Tab」所在的 ChatGPT 对话，而不是 DB 里的任意一条。
  * 2) 支持分支：优先用 nodes 重新构建 rounds（避免旧数据缺少内容/缺少 parentRoundId）。
  * 3) 支持更新：
- *    - 收到 background 的 DATA_READY / UPDATE_NOTIFICATION 后自动刷新
- *    - 用户切换 Tab 或 URL 变化时自动刷新
- *    - 点击刷新按钮会触发 content script 主动重新抓取 API（再回读 DB）
+ *    - 收到 background 的 DATA_READY / UPDATE_NOTIFICATION 后自动回读本地 DB
+ *    - 用户切换 Tab 或 URL 变化时只读取本地 DB，不自动打 conversation API
+ *    - 点击刷新按钮才显式触发 content script / conversation API refresh
+ *
+ * Research Blackboard 的自动 RGΔ 主路径不应依赖这里的 API refresh；
+ * 这样新 Chat、API 暂时 404、SPA 切换都不会形成重试风暴。
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -39,7 +42,8 @@ async function getAssistantStreamMode() {
 }
 
 /**
- * 带重试的消息发送
+ * 带重试的消息发送。
+ * 只对 extension/background 连接错误重试；业务层 cache miss 不在这里重试。
  */
 async function sendMessageWithRetry(message, retries = 3, delay = 500) {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -95,14 +99,14 @@ async function getActiveConversationIdFromTab() {
 }
 
 /**
- * 转换对话数据为 sidepanel 图谱格式
- *
- * background.GET_CONVERSATION 返回：{ conversation, nodes, edges, rounds }
+ * 转换对话数据为 sidepanel 图谱格式。
+ * background.GET_CONVERSATION 返回：
+ * { found, conversation, nodes, edges, rounds }
  */
 function transformToGraphData(payload, assistantStreamMode = DEFAULT_ASSISTANT_STREAM_SETTINGS.mode) {
-  if (!payload) return null;
+  if (!payload || payload.found === false || !payload.conversation) return null;
 
-  const conversation = payload.conversation || payload;
+  const conversation = payload.conversation;
   const rawNodes = payload.nodes || conversation.nodes || [];
   const normalized = normalizeAssistantStreamNodes(rawNodes, {
     mode: assistantStreamMode,
@@ -134,7 +138,6 @@ function transformToGraphData(payload, assistantStreamMode = DEFAULT_ASSISTANT_S
     nodes,
     edges,
     rounds,
-    // 用于调试/未来扩展
     updatedAt: conversation.lastIncrementalUpdate || conversation.updateTime || Date.now(),
     stats: {
       totalRounds: rounds.length,
@@ -152,51 +155,53 @@ export function useConversationData() {
   const [activeConversationId, setActiveConversationId] = useState(null);
 
   const runtimeListenerSetRef = useRef(false);
-
-  // 用于防止重复触发 content script 刷新
   const pendingContentRefreshRef = useRef(new Set());
 
   /**
-   * 触发 content script 抓取数据（不等待结果）
-   * 数据抓取完成后会通过 DATA_READY 消息通知
+   * 显式触发 content script 抓取 conversation API。
+   * 只有手动刷新、设置变化或专门的同步 bridge 应该调用它。
    */
   const triggerContentRefresh = useCallback(async (conversationId) => {
-    // 防止重复触发
+    if (!conversationId) return false;
+
     if (pendingContentRefreshRef.current.has(conversationId)) {
       console.log('[Hook] Content refresh already pending for:', conversationId);
-      return;
+      return false;
     }
 
     const tabs = await queryActiveTab();
     const tab = tabs?.[0];
-    if (!tab?.id) return;
+    if (!tab?.id) return false;
 
     pendingContentRefreshRef.current.add(conversationId);
 
-    // 5秒后自动清除 pending 状态（防止卡死）
+    // 8 秒后自动清除 pending 状态（防止 API 失败后永久卡死）
     setTimeout(() => {
       pendingContentRefreshRef.current.delete(conversationId);
-    }, 5000);
+    }, 8000);
 
     try {
-      console.log('[Hook] Triggering content script to fetch:', conversationId);
-      await sendMessageToTabWithFallback(tab.id, {
+      console.log('[Hook] Explicit content refresh:', conversationId);
+      const response = await sendMessageToTabWithFallback(tab.id, {
         type: MESSAGE_TYPES.REFRESH_DATA,
         payload: { conversationId }
       });
-      console.log('[Hook] ✓ Content refresh triggered for:', conversationId);
+      console.log('[Hook] ✓ Content refresh finished for:', conversationId);
+      return response?.success !== false;
     } catch (e) {
       console.warn('[Hook] Content refresh failed:', e?.message);
       pendingContentRefreshRef.current.delete(conversationId);
+      return false;
     }
   }, []);
 
   /**
-   * 从 background 拉取指定 conversationId 的数据
-   * @param {string} conversationId - 对话 ID
-   * @param {boolean} skipContentTrigger - 是否跳过触发 content script（避免循环）
+   * 只从 background / IndexedDB 拉取指定 conversationId。
+   *
+   * @param {string} conversationId
+   * @param {boolean} triggerIfMissing - 仅供显式恢复流程使用；默认 false。
    */
-  const fetchConversation = useCallback(async (conversationId, skipContentTrigger = false) => {
+  const fetchConversation = useCallback(async (conversationId, triggerIfMissing = false) => {
     if (!conversationId) {
       setConversationData(null);
       setIsLoading(false);
@@ -212,53 +217,48 @@ export function useConversationData() {
         payload: { conversationId }
       }, 3, 500);
 
-      if (response?.success) {
-        const assistantStreamMode = await getAssistantStreamMode();
-        const graphData = transformToGraphData(response.data, assistantStreamMode);
-        setConversationData(graphData);
+      if (!response?.success) {
+        throw new Error(response?.error || 'Failed to read conversation cache');
+      }
+
+      const payload = response.data;
+      if (!payload || payload.found === false || !payload.conversation) {
+        // Cache miss 是新 Chat / SPA 切换中的正常状态，不作为错误。
+        console.debug('[Hook] Conversation cache miss:', conversationId);
         setActiveConversationId(conversationId);
-        // 成功获取数据，清除 pending 状态
-        pendingContentRefreshRef.current.delete(conversationId);
-
-        if (!skipContentTrigger) {
-          triggerContentRefresh(conversationId);
-        }
-      } else {
-        // DB 中没有数据，触发 content script 去抓取
-        // DATA_READY 消息会在抓取完成后触发重新 fetch
-        if (!skipContentTrigger) {
-          console.log('[Hook] Conversation not in DB, triggering content script');
-          triggerContentRefresh(conversationId);
-        }
         setConversationData(null);
+
+        if (triggerIfMissing) {
+          void triggerContentRefresh(conversationId);
+        }
+        return;
       }
+
+      const assistantStreamMode = await getAssistantStreamMode();
+      const graphData = transformToGraphData(payload, assistantStreamMode);
+      setConversationData(graphData);
+      setActiveConversationId(conversationId);
+      pendingContentRefreshRef.current.delete(conversationId);
+
+      // IMPORTANT: successful DB reads never trigger another API refresh.
+      // This removes the previous read -> refresh -> DATA_READY -> read loop.
     } catch (err) {
-      const isNotFound = err.message?.includes('not found');
-
-      if (isNotFound && !skipContentTrigger) {
-        // DB 中没有数据，触发 content script 去抓取
-        console.log('[Hook] Conversation not found, triggering content script');
-        triggerContentRefresh(conversationId);
-        // 不设置 error，等待 DATA_READY
-        setConversationData(null);
-      } else {
-        console.error('[Hook] Failed to fetch conversation:', err);
-        setError(err.message || 'Failed to load conversation data');
-        setConversationData(null);
-      }
+      console.error('[Hook] Failed to read conversation cache:', err);
+      setError(err.message || 'Failed to load conversation data');
+      setConversationData(null);
     } finally {
       setIsLoading(false);
     }
   }, [triggerContentRefresh]);
 
   /**
-   * 根据当前活动 Tab 选择要展示的 conversation
+   * 根据当前活动 Tab 选择要展示的 conversation。
+   * 普通 tab/URL 同步只读本地缓存，不打 API。
    */
   const syncWithActiveTab = useCallback(async () => {
     const convId = await getActiveConversationIdFromTab();
 
     if (!convId) {
-      // 不是对话页：清空
       setActiveConversationId(null);
       setConversationData(null);
       setIsLoading(false);
@@ -267,42 +267,29 @@ export function useConversationData() {
 
     if (convId !== activeConversationId) {
       console.log('[Hook] Active tab conversation changed:', activeConversationId, '→', convId);
-      await fetchConversation(convId);
+      await fetchConversation(convId, false);
     }
   }, [activeConversationId, fetchConversation]);
 
   /**
-   * 刷新数据：
-   * 1) 先请求 content script 重新抓取/解析（更新 DB）
-   * 2) 再从 background 回读 DB
+   * 手动刷新：
+   * 1) 显式请求 content script 抓取/解析
+   * 2) 完成后回读 DB
    */
   const refreshData = useCallback(async () => {
     console.log('[Hook] Manual refresh requested');
 
-    const tabs = await queryActiveTab();
-    const tab = tabs?.[0];
-
     const convId = await getActiveConversationIdFromTab();
-    if (convId) {
-      setActiveConversationId(convId);
+    if (!convId) {
+      setConversationData(null);
+      setIsLoading(false);
+      return;
     }
 
-    // 触发 content script 重新抓取（失败也不要阻塞回读 DB）
-    if (tab?.id) {
-      try {
-        await sendMessageToTabWithFallback(tab.id, {
-          type: MESSAGE_TYPES.REFRESH_DATA,
-          payload: { conversationId: convId }
-        });
-        console.log('[Hook] ✓ Content refresh triggered');
-      } catch (e) {
-        console.warn('[Hook] Content refresh failed (maybe content script not ready):', e?.message);
-      }
-    }
-
-    // 回读 DB（如果 content 刷新成功，会在 DB 里变成最新）
-    await fetchConversation(convId);
-  }, [fetchConversation]);
+    setActiveConversationId(convId);
+    await triggerContentRefresh(convId);
+    await fetchConversation(convId, false);
+  }, [fetchConversation, triggerContentRefresh]);
 
   /**
    * runtime 消息监听：background -> sidepanel
@@ -318,15 +305,9 @@ export function useConversationData() {
         const convId = message.payload?.conversationId;
         console.log('[Hook] DATA_READY received for:', convId);
 
-        // 清除 pending 状态
         if (convId) {
           pendingContentRefreshRef.current.delete(convId);
-        }
-
-        if (convId) {
-          // 优先更新为通知里的对话（通常是当前 tab 切换后的对话）
-          // skipContentTrigger=true 因为数据已经在 DB 中了
-          fetchConversation(convId, true);
+          fetchConversation(convId, false);
         } else {
           syncWithActiveTab();
         }
@@ -336,14 +317,10 @@ export function useConversationData() {
         const convId = message.payload?.conversationId;
         console.log('[Hook] UPDATE_NOTIFICATION received for:', convId);
 
-        // 仅当更新的是当前对话时才刷新；否则交给 tab 同步逻辑
         if (convId && convId === activeConversationId) {
-          // skipContentTrigger=true 因为数据已经在 DB 中了
-          fetchConversation(convId, true);
+          fetchConversation(convId, false);
         }
       }
-
-      // 不需要响应 background，不要 return true
     };
 
     chrome.runtime.onMessage.addListener(handleMessage);
@@ -353,6 +330,10 @@ export function useConversationData() {
     };
   }, [activeConversationId, fetchConversation, syncWithActiveTab]);
 
+  /**
+   * Assistant stream parsing setting changed: this is an explicit user setting,
+   * so one content refresh is acceptable here.
+   */
   useEffect(() => {
     const handleStorageChange = (changes, areaName) => {
       if (areaName !== 'local' || !changes[STORAGE_KEYS.ASSISTANT_STREAM_SETTINGS]) {
@@ -360,8 +341,10 @@ export function useConversationData() {
       }
 
       if (activeConversationId) {
-        fetchConversation(activeConversationId, true);
-        triggerContentRefresh(activeConversationId);
+        void (async () => {
+          await triggerContentRefresh(activeConversationId);
+          await fetchConversation(activeConversationId, false);
+        })();
       }
     };
 
@@ -372,10 +355,9 @@ export function useConversationData() {
   }, [activeConversationId, fetchConversation, triggerContentRefresh]);
 
   /**
-   * 监听 tab 切换/URL 更新（sidepanel 需要跟随用户当前看的对话）
+   * 监听 tab 切换/URL 更新（sidepanel 跟随当前看的对话）。
    */
   useEffect(() => {
-    // 初始同步
     syncWithActiveTab();
 
     const onActivated = () => {
@@ -405,8 +387,8 @@ export function useConversationData() {
     };
   }, [syncWithActiveTab]);
 
-  // 兜底：ChatGPT 是 SPA，有时 tabs.onUpdated 不会触发 changeInfo.url
-  // 用轻量轮询保证 sidepanel 总能跟上当前对话。
+  // ChatGPT 是 SPA，有时 tabs.onUpdated 不会触发 changeInfo.url。
+  // 轻量轮询只检查 URL / DB，不触发 API。
   useEffect(() => {
     const timer = setInterval(() => {
       syncWithActiveTab();

@@ -1,68 +1,82 @@
-# Privacy Policy for ChatGPT Graph Navigator
+# Privacy
 
-**Last Updated: February 2026**s
+ChatGPT Research Blackboard is a browser extension that runs alongside ChatGPT. This document describes the data behavior of the current source tree.
 
-## Overview
+This project does **not** operate its own cloud backend for Research Blackboard data.
 
-ChatGPT Graph Navigator is a browser extension that visualizes your ChatGPT conversations as navigable knowledge graphs. We are committed to protecting your privacy.
+## Research graph data
 
-## Data Collection
+The extension stores Research Blackboard state primarily in browser-local extension storage (`chrome.storage.local`). This includes, depending on use:
 
-**We do NOT collect, store, or transmit any of your personal data to external servers.**
+- research nodes and semantic edges;
+- node positions and layout metadata;
+- checkpoints and keywords;
+- Highlights and user notes;
+- ChatGPT message/quote anchors used for source navigation;
+- project membership and provenance metadata;
+- export/import-related local state.
 
-### What data the extension accesses:
+This data remains in the local browser profile unless the user exports it or the browser/extension environment synchronizes storage independently of this project.
 
-1. **ChatGPT Authentication Token**
-   - Stored locally in your browser's storage
-   - Used only to communicate with ChatGPT's official API
-   - Never sent to any third-party servers
+## Research Mode protocol sent to ChatGPT
 
-2. **Conversation Data**
-   - Read directly from ChatGPT's API
-   - Processed entirely within your browser
-   - Never uploaded or shared externally
+When the Research Blackboard side panel is open, Research Mode is active.
 
-### What data the extension does NOT access:
+The extension appends a compact hidden Research Blackboard instruction (`RBREQ`) to the user's outgoing ChatGPT turn. The instruction contains a limited local graph context selected for the current question. It may include:
 
-- Your email or account credentials
-- Your browsing history outside of ChatGPT
-- Any files on your computer
+- semantic node IDs;
+- compact node titles/keywords;
+- a small set of semantic relationships;
+- an internal context focus or semantic anchor.
 
-## Data Storage
+Because RBREQ is appended to the ChatGPT turn, **that protocol text is sent to ChatGPT/OpenAI as part of the normal conversation request**.
 
-All data is stored locally using Chrome's built-in storage APIs:
-- `chrome.storage.local` - For settings and cached data
-- Data remains on your device and syncs only if you enable Chrome sync
+When ChatGPT returns a machine-readable `RGΔ` block, the extension hides that block from the visible conversation UI and applies the graph delta locally. The response itself is still generated within the ChatGPT service and may therefore be subject to ChatGPT/OpenAI's own data handling and retention policies.
 
-## Third-Party Services
+## Highlights and source anchors
 
-This extension communicates only with:
-- `chatgpt.com` / `chat.openai.com` - Official ChatGPT APIs
+When the user selects text in a ChatGPT assistant response and chooses `★ Save`, the extension stores the selected quote and local source-anchor information so it can reconnect the Highlight to a Research Node and later attempt an exact source jump.
 
-No analytics, tracking, or advertising services are used.
+The extension does not send a saved Highlight to a separate project-operated server.
 
-## Data Security
+## Inherited conversation-cache/auth compatibility layer
 
-- All communication with ChatGPT uses HTTPS encryption
-- Your token is stored securely in browser storage
-- No data is transmitted to any servers we control
+This repository is a fork of `Robbings/chatgpt-graph-navigator` and still contains an inherited compatibility layer for conversation caching and explicit refresh/fallback behavior.
 
-## Your Rights
+That layer includes code that can observe ChatGPT request traffic to capture a ChatGPT access token and store it locally for ChatGPT backend synchronization. The current Research Blackboard workflow does not require users to manually paste a token, and the legacy popup/setup flow is not part of the public UI.
 
-You can:
-- Clear all stored data by removing the extension
-- Clear your token via the extension's settings
-- Review what data is stored via Chrome DevTools
+The token compatibility code is retained to avoid breaking source/cache fallback paths while the fork is being stabilized. It should be treated as security-sensitive code.
 
-## Changes to This Policy
+The project does not intentionally send captured ChatGPT credentials to a third-party server operated by this project.
 
-We may update this privacy policy from time to time. Any changes will be reflected in the "Last Updated" date.
+## Browser permissions
 
-## Contact
+The extension currently requests permissions including:
 
-If you have questions about this privacy policy, please open an issue at:
-https://github.com/anthropics/claude-code/issues
+- `storage` — local Research Blackboard and compatibility state;
+- `sidePanel` — the Research Blackboard side panel;
+- `tabs` — follow the active ChatGPT conversation and support cross-chat source navigation;
+- `scripting` — inherited/compatibility browser-extension behavior on ChatGPT pages;
+- `webRequest` — inherited ChatGPT token/conversation compatibility behavior.
 
----
+Host access is limited in the manifest to ChatGPT domains used by the extension (`chatgpt.com` and the legacy `chat.openai.com` host).
 
-**Summary: Your data stays on your device. We don't collect anything.**
+## Exports
+
+When the user exports `.rbb.json`, Markdown, JSON Canvas, or PNG, the extension creates a local download. Exported files may contain research titles, checkpoints, quotes, notes, and source metadata. The user is responsible for how those files are stored or shared after export.
+
+## Cross-chat projects
+
+Research Projects may combine semantic nodes from multiple ChatGPT conversations in the local canonical project graph. Provenance records can contain conversation/message identifiers needed to return to source chats.
+
+## No affiliation
+
+This extension is not affiliated with, endorsed by, or sponsored by OpenAI.
+
+## Security and limitations
+
+ChatGPT's DOM and internal request behavior can change. Source navigation, DOM parsing, and compatibility refresh logic are best-effort and may break when ChatGPT changes its interface.
+
+Do not use the extension as the only copy of important research data. Use `.rbb.json` export for backups when the data matters.
+
+For repository provenance and licensing status, see [NOTICE.md](./NOTICE.md) and [LICENSE_STATUS.md](./LICENSE_STATUS.md).

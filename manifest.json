@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "__MSG_extName__",
-  "version": "0.6.0",
-  "description": "__MSG_extDescription__",
+  "name": "ChatGPT Research Blackboard",
+  "version": "0.1.0",
+  "description": "A semantic research graph sidecar for ChatGPT with automatic structure, highlights, source jumps, and local export.",
   "default_locale": "en",
   "icons": {
     "16": "assets/icon16.png",
@@ -10,13 +10,12 @@
     "128": "assets/icon128.png"
   },
   "action": {
-    "default_popup": "src/popup/index.html",
     "default_icon": {
       "16": "assets/icon16.png",
       "48": "assets/icon48.png",
       "128": "assets/icon128.png"
     },
-    "default_title": "__MSG_extDefaultTitle__"
+    "default_title": "ChatGPT Research Blackboard"
   },
   "permissions": [
     "storage",
@@ -39,7 +38,9 @@
         "https://chat.openai.com/*"
       ],
       "js": [
-        "dist/content.js"
+        "dist/content.js",
+        "dist/research-producer.js",
+        "dist/research-selection.js"
       ],
       "run_at": "document_idle"
     }

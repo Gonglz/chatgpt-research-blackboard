@@ -1,271 +1,224 @@
-<div align="center">
-<img src="docs/pic/icon256.png" alt="ChatGPT Graph" width="128" />
-<br>
+# ChatGPT Research Blackboard
 
-  <h1>ChatGPT Graph Navigator</h1>
-  <h3>A Browser Extension: Map your conversations. Navigate your thoughts.</h3>
+A semantic research-graph sidecar for ChatGPT.
 
-<p>
-  <img alt="Chrome" src="https://img.shields.io/badge/Chrome-Extension-blue?logo=googlechrome&logoColor=white" />
-  <img alt="Manifest" src="https://img.shields.io/badge/Manifest-V3-10b981" />
-  <img alt="React" src="https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white" />
-  <img alt="XYFlow" src="https://img.shields.io/badge/XYFlow-React%20Flow-111827" />
-</p>
+Instead of treating a long chat as a single transcript, Research Blackboard maintains a compact graph of the research itself: analyses, comparisons, open questions, syntheses, decisions, highlights, and the relationships between them.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Lang-English-lightgrey.svg?style=flat-square" alt="English" />
-  &nbsp;
-  <a href="./README_ZH.md">
-    <img src="https://img.shields.io/badge/Lang-简体中文-blue.svg?style=flat-square" alt="简体中文" />
-  </a>
-</p>
+> **Status:** usable MVP / dogfooding baseline. Desktop Chromium, currently targeting `chatgpt.com`.
 
-<table>
-  <tr>
-    <td align="center" width="200">
-      <img src="/docs/pic/graph.svg" width="45" height="45" alt="Graph View Icon" />
-    </td>
-    <td align="center" width="200">
-      <img src="/docs/pic/timeline.svg" width="45" height="45" alt="Timeline Tree Icon" />
-    </td>
-    <td align="center" width="200">
-      <img src="/docs/pic/tool.svg" width="45" height="45" alt="Workflow Utils Icon" />
-    </td>
-  </tr>
+> **Fork notice:** this repository is a fork and derivative work of [`Robbings/chatgpt-graph-navigator`](https://github.com/Robbings/chatgpt-graph-navigator). Research Blackboard reuses parts of the upstream browser-extension, ChatGPT DOM observation, conversation-cache, message anchoring, and navigation substrate, while replacing the primary product model and side-panel UI with a semantic research graph. See [NOTICE.md](./NOTICE.md).
 
-  <tr>
-    <td align="center">
-      <strong>Graph View</strong>
-    </td>
-    <td align="center">
-      <strong>Timeline Tree</strong>
-    </td>
-    <td align="center">
-      <strong>Workflow Utils</strong>
-    </td>
-  </tr>
+> **Unofficial project:** not affiliated with, endorsed by, or sponsored by OpenAI.
 
-  <tr>
-    <td align="center">
-      <sub>Spatial visualization <br> for logical overview</sub>
-    </td>
-    <td align="center">
-      <sub>Git-style history with<br>branch navigation</sub>
-    </td>
-    <td align="center">
-      <sub>Message folding<br>& more to come</sub>
-    </td>
-  </tr>
-</table>
+## What it does
 
-  <h4>
-    ✨ Visualize your chat history as an interactive tree graph.<br>
-    The professional mind-map interface for navigating ChatGPT conversations.
-  </h4>
+When the side panel is open, the extension can maintain a semantic graph alongside the active ChatGPT conversation.
 
+- **Automatic graph maintenance** through a compact hidden `RBREQ` / `RGΔ` protocol.
+- **Node types:** Analysis, Comparison, Question, Synthesis, Judgment.
+- **Relations:** `deepens`, `compares`, `supports`, `contradicts`, `informs`.
+- **Research-first layout:** ELK layered layout, `deepens` backbone, collision avoidance, soft drag preferences, curved routing.
+- **Anchor-aware context:** explicit returns to older topics are preferred over mere recency.
+- **Highlights:** save selected answer text to the best matching node; annotate, reorder, move, delete, promote/demote, and jump back to the quote.
+- **Compact detail drawer:** checkpoint, keywords, highlights, relations, and source controls without expanding canvas nodes.
+- **Research Projects:** experimental project-level canonical graph with per-conversation provenance.
+- **Export:** `.rbb.json`, Markdown, JSON Canvas, full-graph PNG.
+- **Import:** restore `.rbb.json` packages.
 
-<p align="center">
-  <a href="#features">Features</a>
-  &nbsp;·&nbsp;
-  <a href="#installation">Installation</a>
-  &nbsp;·&nbsp;
-  <a href="#local-development">Local Development</a>
-  &nbsp;·&nbsp;
-  <a href="#roadmap">Roadmap</a>
-</p>
-
-</div>
-
-## Why Linear Chat Isn't Enough?
-
-Complex problem-solving is rarely a straight line. It involves hypotheses, trial and error, and exploring multiple possibilities simultaneously. However, a standard linear chat forces all these distinct thought processes into a single, cluttered timeline.
-
-* **📉 The "Context Pollution" Problem:** When you test different approaches sequentially in one thread, irrelevant contexts and failed attempts accumulate. This "noise" distracts the model, consuming token limits and interfering with its ability to provide the most accurate analysis for your current strategy.
-* **🔀 The Need for Parallel Exploration:** To get the best results, you often need to fork the conversation—editing prompts or regenerating answers to test distinct paths. In a linear interface, managing these "parallel universes" is chaotic. You lose track of where ideas diverged and which branch yielded the best result.
-* **🧠 Cognitive Overload:** Trying to mentally reconstruction the relationship between a prompt sent 20 minutes ago and a new variation you just wrote is exhausting.
-
-**ChatGPT Graph Navigator solves this.** We visualize your branches, helping you isolate contexts for cleaner model outputs while keeping your entire reasoning structure organized.
-
-<br>
-
-<h2 id="features">✨ Features</h2>
-
-<div align="center">
-  <img src="docs/pic/main_feature.png" width="80%" style="max-width: 800px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" alt="main feature" />
-</div>
-
-### Key capabilities at a glance:
-
-* **🎨 Flexible UI Modes:** Use the **Sidebar** for a persistent, immersive workflow, or the **Floating Window** for quick, on-demand visualization.
-* **👁️ Dual Visualization:**
-    * **Graph View:** A 2D mind-map structure to understand the "big picture" and logic flow.
-    * **Timeline Tree:** A Git-style vertical tree for tracking granular changes and edits.
-* **⚡ Instant Navigation:** Click any node to **jump directly** to that specific message in any branch, instantly restoring the context.
-* **🔍 Power Search:** Quickly locate specific prompts or answers across the entire conversation tree.
-* **🛠️ Workflow Utilities:** Includes message auto-folding and plans for more efficiency tools (export, formatting, etc.).
-
-### 🌲 The Integrated Sidebar: Your Conversation Command Center
-*Navigate complex threads without ever leaving your chat context.*
-
-<div align="center">
-  <img src="docs/pic/sidepanel.gif" width="80%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" alt="Sidebar Navigation Demo" />
-</div>
-
-<br>
-
-The sidebar is designed for efficiency, offering two distinct modes to suit your workflow:
-
-#### 1. The Graph Mode
-*Perfect for structure and context jumping.*
-* **Spatial Control:** Zoom and pan freely to grasp the full topology of your conversation topics instantly.
-* **One-Click Teleport:** See a node you want to revisit? Click any message node in the graph to **instantly jump** to that exact moment in any branch, restoring its context immediately.
-
-#### 2. The Smart Timeline Mode
-*Perfect for precision and content retrieval.*
-* **Focused Filtering:** Too much noise? Toggle filters to show **Q&A**, **Questions Only**, or **Answers Only**. Great for skimming through your prompt history.
-* **Instant Search:** Don't scroll endlessly. Use the built-in search bar to locate specific keywords and jump directly to the target message.
-
-### 🧠 The Floating Window: On-Demand Overlay
-*A lightweight, movable window designed for multitasking.*
-
-* 🚀 Draggable & Resizable & Access the full Graph/Timeline views anywhere on your screen.
-* **👻 Ghost Mode:** Enable **"Click-Through"** to interact with the page behind the transparency.
-* **📌 Pin & Blend:** Keep the window **Always-on-Top** and adjust **Opacity** to fit your workflow.
-
-<div align="center">
-  <img src="docs/pic/float_main.png" width="60%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" alt="Floating Window Demo" />
-</div>
-
-### 🛠️ Workflow Utilities
-We are continuously optimizing the details to improve your efficiency.
-
-* **📂 Message Auto-Folding:** Automatically or manually collapse long responses or code blocks to keep your workspace clean.
-* **🚀 Coming Soon:** We are working on **Powerful Chat Export** (Markdown/Image/Pdf).
-* **💡 Have an Idea?** We welcome feature requests! Feel free to [open an issue](https://github.com/Robbings/chatgpt-graph-navigator/issues) to let us know what you need.
-
-<br>
-<br>
-
-<h2 id="installation">📥 Installation</h2>
-
-### Option 1: Load Unpacked (For Developers & Early Adopters)
-1.  **Download:** Download the latest [Release](https://github.com/Robbings/chatgpt-graph-navigator/releases).
-2.  **Open Chrome Extensions:** Enter `chrome://extensions/` in your browser address bar and press Enter.
-3.  **Enable Developer Mode:** Toggle the switch in the top-right corner.
-4.  **Load:** Click the **"Load unpacked"** button and select the downloaded file.
-
-### Option 2: Chrome Web Store (Recommended)
-> 🚧 **Coming Soon:** We are currently reviewing our submission to the Chrome Web Store. Stay tuned!
-
-<br>
-<br>
-
-<h2 id="local-development">💻 Local Development</h2>
-
-Whether you want to fix a bug or add a new feature, we welcome contributions! Here is how to get the project running locally.
-
-### Prerequisites
-
-Ensure you have the following installed on your machine:
-
-* **[Node.js](https://nodejs.org/)** (v18 or higher)
-* **Package Manager:** [pnpm](https://pnpm.io/) (recommended), npm, or yarn
-* **Browser:** Chrome or any Chromium-based browser (Edge, Brave, Arc, etc.)
-
-### Setup & Installation
-
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/Robbings/chatgpt-graph-navigator.git
-    cd chatgpt-graph-navigator
-    ```
-
-2.  **Install dependencies**
-    ```bash
-    npm install
-    # or if using pnpm
-    pnpm install
-    ```
-
-3.  **Start Development Mode**
-    This command starts the build process in **watch mode**. Any changes you make to the source files will trigger an automatic rebuild.
-    
-    ```bash
-    npm run dev
-    ```
-    
-    > **Note:** Keep this terminal window open while developing to ensure your changes are compiled in real-time.
-    
-4.  **Build for Production**
-    ```bash
-    npm run build
-    ```
-
-
-### Project Structure
-
-Here is a quick overview of the codebase to help you navigate:
+## Mental model
 
 ```text
-├── src/
-│   ├── background/         # Service worker (handles events & context menus)
-│   ├── content/            # Scripts injected into the ChatGPT page
-│   │   ├── ui/             # React components for Floating Panel & Sidebar
-│   │   ├── observers/      # DOM observers (detects new messages)
-│   │   └── parser/         # Logic to parse chat HTML into Graph data
-│   └── sidepanel/          # The standalone Side Panel application
-│       ├── components/     # Reusable UI components
-│       ├── hooks/          # Custom React hooks
-│       └── styles/         # Global styles and Tailwind config
-├── dist/                   # Compiled output (auto-generated)
-├── assets/                 # Icons and static images
-├── _locales/               # i18n translation files
-├── manifest.json           # Extension configuration
-└── build.js                # esbuild configuration script
+ChatGPT conversation
+        ↓
+local reasoning / source material
+        ↓
+Research Blackboard
+├─ Analysis
+├─ Comparison
+├─ Question
+├─ Synthesis
+└─ Judgment
 ```
 
-<br>
-<br>
+A ChatGPT message is a **source container**. A Research Node is a **semantic research state**. They are intentionally not 1:1.
 
-<h2 id="roadmap">🗺️ Roadmap</h2>
+### Node semantics
 
-We have exciting plans to turn this tool into a comprehensive Knowledge Management System for AI conversations.
+- **Analysis** — one explanatory or reasoning branch.
+- **Comparison** — an explicit cross-case comparison.
+- **Question** — a genuinely unresolved research question.
+- **Synthesis** — a reusable higher-level takeaway created only when multiple existing branches actually converge.
+- **Judgment** — an explicit decision, recommendation, ranking, or choice; it should be rare in open-ended exploratory research.
 
-#### ✅ Completed
-- [x] **Core:** Interactive Graph View & Git-Style Timeline.
-- [x] **UI:** Integrated Sidebar & Floating Window modes.
-- [x] **Utils:** Message auto-folding for clean workspace.
+### Structural backbone
 
-#### 🚧 In Progress & Planned
+Only `deepens` controls vertical hierarchy.
 
-**1. Advanced Annotation**
-- [ ] **Node Highlighting:** Mark specific nodes with custom colors (e.g., "Important", "To-Do", "Wrong") to visually categorize information.
-- [ ] **Branch Bookmarking:** "Star" or "Pin" specific conversation branches for quick retrieval later.
+Canonical semantic direction:
 
-**2. Graph Editing & Restructuring**
-- [ ] **Pruning:** Delete unwanted nodes or remove entire branches to keep the context clean.
-- [ ] **Custom Linking:** Manually create edges between any two nodes—even across different branches—to build your own logical connections independent of the original chat flow.
+```text
+specific child --deepens--> broader parent
+```
 
-**3. Global Knowledge Graph**
-> **The Ultimate Goal:** Moving beyond single chats.
-- [ ] **Cross-Conversation View:** Visualize multiple chat sessions in a single workspace.
-- [ ] **Project-Level Management:** Group related conversations into "Projects" and manage their relationships in a unified graph.
+Visual reading direction:
 
-**4. More Utilities**
-- [ ] **Export:** Save charts as Markdown, JSON, or HD Images.
-- [ ] **Global Search:** Search keywords across all nodes and branches.
-- [ ] **Formula Support:** One-click copy for LaTeX formulas.
+```text
+broader parent
+      ↓
+more specific child
+```
 
-**0. Bug FIX**
-- [ ] Unable to jump to certain special nodes (e.g., some special image nodes).
+Other relations are contextual cross-links and do not determine rank.
 
-<h2 id="contributing">🤝 Contributing</h2>
+## Installation from source
 
-We welcome all contributions!
-Please feel free to **[Open an Issue](https://github.com/Robbings/chatgpt-graph-navigator/issues)** for bugs & feature requests, or **Submit a PR**.
+Requirements: Node.js 18+, npm, and a Chromium browser with Manifest V3 side panels.
 
-## 📄 License
+```bash
+git clone https://github.com/Gonglz/chatgpt-research-blackboard.git
+cd chatgpt-research-blackboard
+npm install
+npm test
+npm run build
+```
 
-<img src="https://img.shields.io/badge/License-GPLv3-blue.svg?style=flat-square" alt="GPLv3 License">
+Then open `chrome://extensions/`, enable **Developer mode**, choose **Load unpacked**, and select the **repository root** containing `manifest.json` — not `dist/`.
 
-This project is licensed under the **GPL-3.0 License**. 
+Clicking the extension action opens the Research Blackboard side panel directly.
+
+Development build:
+
+```bash
+npm run dev
+```
+
+Production-style build:
+
+```bash
+npm run build:release
+```
+
+## Typical workflow
+
+1. Open a ChatGPT conversation.
+2. Open the extension side panel. `● Live` means Research Mode is active.
+3. Ask questions normally; no graph commands are required.
+4. Use the graph as external spatial memory: inspect nodes, follow the backbone, save Highlights, and jump back to sources.
+5. Export important research when needed.
+
+Product principle: **AI maintains structure by default; the user mainly corrects or curates.**
+
+## Highlights
+
+Select text inside a ChatGPT assistant response while the side panel is open:
+
+- `★ Save` attaches the quote to the best matching existing node.
+- `+ Node` creates a new Analysis / Comparison / Question from the selection.
+
+Saved Highlights support notes, ordering, move/delete, promote to node, demote back to Highlight, and exact-source jumping when the DOM anchor can be recovered safely.
+
+## Projects
+
+Research Projects use a hybrid model:
+
+```text
+Project
+└─ canonical semantic graph
+   ├─ Node A
+   │  └─ sources: Chat 1, Chat 3
+   └─ Edge X
+      └─ sources: Chat 2
+```
+
+Nodes belong to the project graph; provenance belongs to individual conversations. This feature is implemented but still needs broader real-world testing.
+
+## Export and ownership
+
+- **`.rbb.json`** — lossless Research Blackboard package for backup/import.
+- **`.md`** — readable linear research notes.
+- **`.canvas`** — JSON Canvas for compatible infinite-canvas tools such as Obsidian.
+- **`.png`** — full graph image.
+
+Research state is primarily stored locally in browser extension storage.
+
+## Automatic graph maintenance
+
+While the side panel is open, the content script appends a compact hidden Research Blackboard request (`RBREQ`) to the outgoing user turn. ChatGPT may append a machine-readable `RGΔ` block when the graph meaningfully changes; the extension hides that block visually and applies the delta locally.
+
+Context is deliberately compact. The current protocol prioritizes:
+
+1. explicit semantic anchors in the user's new query;
+2. closely related graph nodes/edges;
+3. current internal context focus;
+4. recency only as a weak tie-breaker.
+
+This supports non-linear research where the user frequently returns to earlier branches.
+
+## Privacy and permissions
+
+Read [PRIVACY.md](./PRIVACY.md).
+
+Important points:
+
+- Research graph data and Highlights are primarily stored in `chrome.storage.local`.
+- The project does not operate its own cloud backend.
+- While Research Mode is active, the hidden RBREQ text is sent to ChatGPT as part of the normal conversation request.
+- The fork still contains an inherited conversation-cache/auth compatibility layer used by explicit refresh/fallback paths.
+
+## Tests and CI
+
+```bash
+npm test
+npm run build
+```
+
+Regression tests cover the RGΔ parser/reducer plus critical layout invariants: canonical `deepens` direction, backbone parent selection, vertical rank, and same-rank collision avoidance.
+
+GitHub Actions runs install, tests, and build on pushes and pull requests.
+
+The stale upstream `package-lock.json` was removed because it no longer matched Research Blackboard dependencies. CI intentionally uses `npm install` for now. A future local `npm install` can regenerate and commit a new lockfile; CI can then switch to `npm ci`.
+
+## Architecture
+
+```text
+chatgpt.com
+   ↓
+content scripts
+├─ upstream-derived DOM / conversation substrate
+├─ research-producer (RBREQ v7)
+└─ research-selection
+   ↓
+Chrome local storage / background compatibility cache
+   ↓
+Research Blackboard side panel
+├─ semantic graph reducer
+├─ project / provenance scope
+├─ ELK structural layout
+├─ Highlight manager
+├─ source jump
+└─ export / import
+```
+
+The core Research Blackboard workflow does not require a separate OpenAI API key, external RAG service, or project-operated cloud backend.
+
+## Upstream and attribution
+
+This repository remains a GitHub fork of [`Robbings/chatgpt-graph-navigator`](https://github.com/Robbings/chatgpt-graph-navigator). Do not remove the fork relationship or upstream attribution when redistributing this derivative work.
+
+Research Blackboard-specific work includes the semantic research model, automatic graph protocol, semantic-anchor retrieval, Highlights/provenance, project graphs, ELK backbone layout/routing, Research Blackboard UX, and export/import.
+
+See [NOTICE.md](./NOTICE.md).
+
+## License status
+
+**Do not rely on the old MIT/GPL labels previously present in this fork.**
+
+The upstream repository currently has inconsistent licensing metadata: its README states GPL-3.0, its `package.json` states MIT, and no root `LICENSE` file was present in the upstream snapshot reviewed for this fork.
+
+Because this is a derivative work, this fork does not unilaterally choose a license for upstream code. See [LICENSE_STATUS.md](./LICENSE_STATUS.md) before redistribution or publishing packaged binaries.
+
+## Contributing
+
+Pull requests are welcome. For changes to semantic graph behavior, add or update a regression test whenever practical.
+
+The core product constraint is simple: **reduce cognitive load; do not turn graph maintenance into another manual knowledge-management job.**

@@ -1,17 +1,67 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ChatGPT Graph</title>
+  <title>ChatGPT Research Blackboard</title>
   <style>
-    /* 确保页面填满整个视口 */
     html, body {
       width: 100%;
       height: 100%;
       margin: 0;
       padding: 0;
       overflow: hidden;
+    }
+
+    /* Compact overlay detail surface. Bottom placement is intentionally roomier. */
+    section[aria-label="Research node detail"][style*="top: 10px"] {
+      width: clamp(265px, 30%, 325px) !important;
+      border-radius: 10px !important;
+      box-shadow: 0 14px 36px rgba(15, 23, 42, 0.17) !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:first-child {
+      padding: 8px 9px 7px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:first-child > div:first-child {
+      gap: 6px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:first-child > div:first-child > div:first-child > div:nth-child(2) {
+      margin-top: 1px !important;
+      font-size: 15px !important;
+      line-height: 20px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:first-child > div:first-child > div:first-child > div:nth-child(3) {
+      margin-top: 2px !important;
+      font-size: 11.5px !important;
+      line-height: 15px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:first-child > div:nth-child(2) {
+      gap: 5px !important;
+      margin-top: 6px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:first-child button {
+      min-height: 25px !important;
+      padding-top: 3px !important;
+      padding-bottom: 3px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:nth-child(2) {
+      padding: 9px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:nth-child(2) > div:nth-child(2) {
+      margin-top: 10px !important;
+      min-height: 92px !important;
+    }
+
+    section[aria-label="Research node detail"][style*="top: 10px"] > div:nth-child(2) > div:last-child {
+      margin-top: 9px !important;
     }
   </style>
   <link rel="stylesheet" href="../../dist/sidepanel.css">
